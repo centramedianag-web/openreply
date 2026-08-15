@@ -34,6 +34,11 @@ yarn-error.log*
 .env*
 !.env.example
 
+# Scratch output from scripts/ — dm-sample.* contains real DMs pulled from a
+# client's inbox (usernames, message text, phone numbers people volunteered).
+# It is diagnostic data, not source, and must never reach a git remote.
+output/
+
 # vercel
 .vercel
 

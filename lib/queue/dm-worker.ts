@@ -27,6 +27,7 @@ import {
   sendPrivateReplyWithLinkButton,
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
+import { generateSmartReply, isAiConfigured } from "@/lib/ai/smart-reply";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
 import { reserveDMSlot } from "@/lib/utils/rate-limiter";
 import {
@@ -41,6 +42,11 @@ import {
 } from "@/lib/tracking/message";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
+
+// Per-account AI replies allowed per UTC day. 300 is far above any real
+// client's inbound volume (the busiest sampled account saw ~60 DMs total) and
+// caps a runaway day at roughly ₹25.
+const AI_DAILY_REPLY_CAP = Number(process.env.AI_DAILY_REPLY_CAP ?? 300);
 
 function formatError(error: unknown): string {
   if (error instanceof MetaApiError) {
@@ -999,8 +1005,101 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
  * comments) and delivers the reveal directly, honouring the follow gate.
  * Dedup is per inbound message id, so each message triggers at most one reply.
  */
+/**
+ * Answer an inbound DM with an AI-written reply.
+ *
+ * Runs before the keyword campaigns and, when it sends, stops them: a person
+ * who has just had their question answered should not also receive a canned
+ * campaign message. Returns false whenever AI is off, unconfigured, or fails,
+ * and the caller carries on to the campaigns as though this did not exist.
+ */
+async function tryAiReply(
+  instagramAccountId: string,
+  messageId: string,
+  messageText: string,
+  senderId: string
+): Promise<boolean> {
+  if (!isAiConfigured()) return false;
+
+  const account = await prisma.instagramAccount.findUnique({
+    where: { instagramId: instagramAccountId },
+  });
+
+  if (!account?.aiEnabled || !account.aiBrain?.trim()) return false;
+
+  // Cost ceiling. Each reply is cheap (~₹0.08), but nothing upstream bounds how
+  // many inbound DMs arrive — a spam wave or a bad actor could otherwise bill
+  // without limit. Past the cap we return false rather than going silent, so the
+  // keyword campaigns answer exactly as they did before AI existed.
+  const startOfDayUtc = new Date();
+  startOfDayUtc.setUTCHours(0, 0, 0, 0);
+  const repliesToday = await prisma.aiReply.count({
+    where: { instagramAccountId: account.id, createdAt: { gte: startOfDayUtc } },
+  });
+  if (repliesToday >= AI_DAILY_REPLY_CAP) {
+    console.warn(
+      `[AI] daily cap of ${AI_DAILY_REPLY_CAP} reached for @${account.username}; falling back to campaigns`
+    );
+    return false;
+  }
+
+  const generated = await generateSmartReply(account.aiBrain, messageText);
+  if (!generated) return false;
+
+  // Written before the send. A retry of this job then collides with the unique
+  // messageId and gives up, rather than messaging the person a second time.
+  try {
+    await prisma.aiReply.create({
+      data: {
+        workspaceId: account.workspaceId,
+        instagramAccountId: account.id,
+        messageId,
+        senderId,
+        inboundText: messageText,
+        intent: generated.intent,
+        handoff: generated.handoff,
+        replyText: generated.reply,
+      },
+    });
+  } catch {
+    console.log(`[AI] ${messageId} already answered, skipping`);
+    return true;
+  }
+
+  try {
+    const accessToken = decryptToken(account.accessToken);
+    await sendDirectMessage(
+      accessToken,
+      account.instagramId,
+      senderId,
+      generated.reply
+    );
+    await prisma.aiReply.update({
+      where: { messageId },
+      data: { status: "SENT", sentAt: new Date() },
+    });
+    console.log(
+      `[AI] replied to ${senderId} (${generated.intent}, handoff=${generated.handoff})`
+    );
+    return true;
+  } catch (error) {
+    await prisma.aiReply.update({
+      where: { messageId },
+      data: { status: "FAILED", errorMessage: formatError(error) },
+    });
+    console.error(`[AI] send failed for ${messageId}:`, formatError(error));
+    // The row stays, so the campaigns do not now fire on top of a failed AI
+    // attempt and produce a second, unrelated message.
+    return true;
+  }
+}
+
 async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
+
+  if (await tryAiReply(instagramAccountId, messageId, messageText, senderId)) {
+    return;
+  }
 
   const automations = await prisma.automation.findMany({
     where: {

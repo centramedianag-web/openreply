@@ -84,6 +84,7 @@ model Workspace {
   linkClicks        LinkClick[]
   webhookEvents     WebhookEvent[]
   operationalEvents OperationalEvent[]
+  aiReplies         AiReply[]
 
   @@index([ownerId])
 }
@@ -124,6 +125,10 @@ model WorkspaceInvitation {
   @@index([status])
 }
 
+/// aiEnabled / aiBrain sit on the account rather than the campaign because the
+/// brand voice and the facts belong to the client, not to one automation. A
+/// workspace running five clients keeps five separate brains, and one client's
+/// pricing can never leak into another's reply.
 model InstagramAccount {
   id                String   @id @default(cuid())
   workspaceId       String
@@ -133,6 +138,12 @@ model InstagramAccount {
   accessToken       String
   tokenExpiresAt    DateTime?
   webhookSubscribed Boolean  @default(false)
+  /// Off by default. An account only starts replying with AI once someone has
+  /// written a brain for it and turned this on deliberately.
+  aiEnabled         Boolean  @default(false)
+  /// What the model is allowed to know about this client: who they are, what
+  /// they sell, tone, and what to do with enquiries it must not answer.
+  aiBrain           String?
   connectedAt       DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -141,6 +152,7 @@ model InstagramAccount {
   dmLogs      DmLog[]
   linkClicks  LinkClick[]
   followerSnapshots FollowerSnapshot[]
+  aiReplies   AiReply[]
 
   @@index([workspaceId])
 }
@@ -226,6 +238,40 @@ model Automation {
   @@index([workspaceId])
   @@index([instagramAccountId])
   @@index([postId])
+}
+
+/// One row per inbound DM the AI answered.
+///
+/// Kept apart from DmLog because that table hangs off an Automation and dedupes
+/// on [automationId, commentId]; an AI reply belongs to no campaign. The row is
+/// written BEFORE the send, so a retried job hits the unique messageId and stops
+/// instead of messaging the person twice.
+model AiReply {
+  id                 String   @id @default(cuid())
+  workspaceId        String
+  instagramAccountId String
+
+  messageId    String  @unique
+  senderId     String
+  inboundText  String
+  intent       String
+  handoff      Boolean @default(false)
+  replyText    String
+  status       String  @default("PENDING")
+  errorMessage String?
+  sentAt       DateTime?
+
+  createdAt DateTime @default(now())
+
+  workspace        Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  instagramAccount InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  /// Ordered for the per-account daily cap in the worker, which counts today's
+  /// rows on every inbound DM. A bare instagramAccountId index would make that
+  /// count scan the account's entire history as the table grows.
+  @@index([instagramAccountId, createdAt])
+  @@index([handoff])
 }
 
 model DmLog {
