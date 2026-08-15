@@ -6,6 +6,7 @@ import { calculateCtr, normalizeTopKeywords } from "@/lib/tracking/analytics";
 import { buildTrackedUrl } from "@/lib/tracking/message";
 import { generateTrackedLinkSlug } from "@/lib/tracking/server";
 import { buildReportUrl, generateReportShareSlug } from "@/lib/reports/share";
+import { checkImageUrl } from "@/lib/utils/image-url";
 import {
   canManageWorkspace,
   getCurrentWorkspaceContext,
@@ -29,6 +30,7 @@ const createAutomationSchema = z
     dmTriggerEnabled: z.boolean().optional().default(false),
     dmMessage: z.string().min(1).max(1000),
     dmMessages: z.array(z.string().max(1000)).max(10).optional().default([]),
+    dmImageUrl: z.string().url().max(2000).optional().nullable(),
     openingDmEnabled: z.boolean().optional().default(false),
     openingDmMessage: z.string().max(1000).optional().nullable(),
     openingDmButtonLabel: z.string().max(64).optional().nullable(),
@@ -93,6 +95,7 @@ const updateAutomationSchema = z.object({
   dmTriggerEnabled: z.boolean().optional(),
   dmMessage: z.string().min(1).max(1000).optional(),
   dmMessages: z.array(z.string().max(1000)).max(10).optional(),
+  dmImageUrl: z.string().url().max(2000).optional().nullable(),
   openingDmEnabled: z.boolean().optional(),
   openingDmMessage: z.string().max(1000).optional().nullable(),
   openingDmButtonLabel: z.string().max(64).optional().nullable(),
@@ -388,6 +391,18 @@ export async function POST(request: NextRequest) {
     .map((m) => m.trim())
     .filter(Boolean);
 
+  // Verified now rather than at send time: Instagram downloads this from its
+  // own servers, so a link that renders in the browser can still fail later.
+  if (parsed.data.dmImageUrl) {
+    const check = await checkImageUrl(parsed.data.dmImageUrl);
+    if (!check.ok) {
+      return NextResponse.json(
+        { success: false, error: check.reason },
+        { status: 400 }
+      );
+    }
+  }
+
   const automation = await prisma.automation.create({
     data: {
       name: parsed.data.name,
@@ -404,6 +419,7 @@ export async function POST(request: NextRequest) {
       // and is the fallback the worker sends when the pool is empty.
       dmMessage: dmMessageList[0] ?? parsed.data.dmMessage,
       dmMessages: dmMessageList,
+      dmImageUrl: parsed.data.dmImageUrl ?? null,
       openingDmEnabled,
       openingDmMessage: openingDmEnabled
         ? parsed.data.openingDmMessage || null
@@ -550,6 +566,17 @@ export async function PATCH(request: NextRequest) {
     automationData.dmMessages = list;
     if (list.length > 0) {
       automationData.dmMessage = list[0];
+    }
+  }
+  // Same save-time check as on create — an edit must not be able to swap in a
+  // URL Instagram will reject later.
+  if (automationData.dmImageUrl) {
+    const check = await checkImageUrl(automationData.dmImageUrl);
+    if (!check.ok) {
+      return NextResponse.json(
+        { success: false, error: check.reason },
+        { status: 400 }
+      );
     }
   }
 

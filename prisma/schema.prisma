@@ -189,6 +189,11 @@ model Automation {
   // publicReplyMessage / publicReplyMessages.
   dmMessage      String
   dmMessages     String[] @default([])
+  // Publicly reachable PNG/JPEG (Meta fetches it server-side, 8MB cap) sent as
+  // a second message after the DM text. Only on paths that use a real DM
+  // (button-tap reveal, DM keyword trigger) — a private reply to a comment is
+  // documented as text-only and is capped at one message per comment.
+  dmImageUrl     String?
   openingDmEnabled     Boolean @default(false)
   openingDmMessage     String?
   openingDmButtonLabel String?

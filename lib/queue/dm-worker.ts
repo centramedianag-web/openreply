@@ -19,6 +19,7 @@ import {
   getUserFollowStatus,
   sendCommentReply,
   sendDirectMessage,
+  sendDirectMessageImage,
   sendDirectMessageWithButton,
   sendDirectMessageWithLinkButton,
   sendPrivateReply,
@@ -134,10 +135,40 @@ export function pickDmMessage(automation: {
 type RevealAutomation = {
   dmMessage: string;
   dmMessages?: string[];
+  dmImageUrl?: string | null;
   linkButtonLabel: string | null;
   trackedLinks: WorkerTrackedLink[];
   instagramAccount: { instagramId: string };
 };
+
+/**
+ * Send the campaign's image as a follow-on message, if one is configured.
+ *
+ * Never throws. The text has already been delivered by the time this runs, so
+ * a rejected image (URL gone, wrong content type, over 8MB) must not fail the
+ * job and trigger a retry — that would send the text a second time.
+ */
+async function sendRevealImage(
+  accessToken: string,
+  automation: RevealAutomation,
+  userId: string,
+  context: string
+): Promise<void> {
+  if (!automation.dmImageUrl) return;
+  try {
+    await sendDirectMessageImage(
+      accessToken,
+      automation.instagramAccount.instagramId,
+      userId,
+      automation.dmImageUrl
+    );
+  } catch (imageError) {
+    console.error(
+      `[DM Worker] Image attachment failed in ${context} (text was delivered):`,
+      formatError(imageError)
+    );
+  }
+}
 
 /**
  * Deliver a campaign's reveal message as a direct message. Shared by the
@@ -166,6 +197,7 @@ async function sendRevealDirectMessage(
         trackedLinks: automation.trackedLinks,
       })
     );
+    await sendRevealImage(accessToken, automation, userId, context);
     return;
   }
 
@@ -213,6 +245,8 @@ async function sendRevealDirectMessage(
       throw buttonError;
     }
   }
+
+  await sendRevealImage(accessToken, automation, userId, context);
 }
 
 async function processComment(job: Job<ProcessCommentJob>): Promise<void> {

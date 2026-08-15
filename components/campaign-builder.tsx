@@ -39,6 +39,7 @@ interface LoadedCampaign {
   dmTriggerEnabled: boolean;
   dmMessage: string;
   dmMessages: string[];
+  dmImageUrl: string | null;
   openingDmEnabled: boolean;
   openingDmMessage: string | null;
   openingDmButtonLabel: string | null;
@@ -171,6 +172,8 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   // Extra wordings beyond the main one above. Stored as [dmMessage, ...these]
   // so the primary message is always variation one.
   const [dmMessageVariations, setDmMessageVariations] = useState<string[]>([]);
+  const [dmImageUrl, setDmImageUrl] = useState<string | null>(null);
+  const [imageUploading, setImageUploading] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [trackedDestinationUrl, setTrackedDestinationUrl] = useState("");
   const [linkButtonLabel, setLinkButtonLabel] = useState("Open link");
@@ -277,6 +280,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         setDmMessage(c.dmMessage);
         // Variation one is the primary message, so only the rest go in the list.
         setDmMessageVariations(c.dmMessages?.slice(1) ?? []);
+        setDmImageUrl(c.dmImageUrl ?? null);
         setLinkButtonLabel(c.linkButtonLabel ?? "Open link");
         setIsActive(c.isActive);
         const link = c.trackedLinks?.[0]?.destinationUrl ?? "";
@@ -419,6 +423,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       dmMessages: dmMessageVariations.some((m) => m.trim())
         ? [dmMessage, ...dmMessageVariations].map((m) => m.trim()).filter(Boolean)
         : [],
+      dmImageUrl,
       openingDmEnabled,
       openingDmMessage: openingDmEnabled ? openingDmMessage : null,
       openingDmButtonLabel: openingDmEnabled ? openingDmButtonLabel : null,
@@ -926,6 +931,66 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 One version is picked at random per send, so hundreds of people
                 don&apos;t all receive the identical message.
               </p>
+            )}
+
+            {dmImageUrl ? (
+              <div className="flex items-center gap-3 rounded-lg border border-border p-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={dmImageUrl}
+                  alt="Attached to the DM"
+                  className="h-14 w-14 rounded object-cover"
+                />
+                <span className="flex-1 text-xs text-muted">
+                  Sent as a second message, right after the text.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDmImageUrl(null)}
+                  className="shrink-0 px-2 text-muted hover:text-error"
+                  aria-label="Remove image"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <label className="block">
+                <span className="cursor-pointer text-xs font-medium text-accent hover:underline">
+                  {imageUploading ? "Uploading…" : "+ Attach an image (PNG or JPEG, max 8MB)"}
+                </span>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  disabled={imageUploading}
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    // Reset immediately so re-picking the same file re-fires change.
+                    e.target.value = "";
+                    if (!file) return;
+                    setImageUploading(true);
+                    setError(null);
+                    try {
+                      const body = new FormData();
+                      body.append("file", file);
+                      const res = await fetch("/api/uploads/image", {
+                        method: "POST",
+                        body,
+                      });
+                      const json = await res.json();
+                      if (!res.ok || !json.success) {
+                        setError(json.error ?? "Could not upload that image.");
+                        return;
+                      }
+                      setDmImageUrl(json.url);
+                    } catch {
+                      setError("Could not upload that image.");
+                    } finally {
+                      setImageUploading(false);
+                    }
+                  }}
+                />
+              </label>
             )}
             {linkOpen ? (
               <div className="space-y-2">

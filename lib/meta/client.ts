@@ -359,6 +359,47 @@ export async function sendDirectMessage(
 }
 
 /**
+ * Send an image as its own direct message.
+ *
+ * Meta fetches `imageUrl` from its own servers, so the URL has to be publicly
+ * reachable and return the image bytes with an image content type — a share
+ * page that returns HTML (Google Drive's /file/d/<id>/view, for one) fails
+ * here. PNG and JPEG only, 8MB maximum.
+ *
+ * Deliberately not offered for private replies: those are documented as text
+ * only and Meta allows a single message per comment, so an image attempt there
+ * would burn the one reply the campaign gets.
+ */
+export async function sendDirectMessageImage(
+  accessToken: string,
+  instagramAccountId: string,
+  userId: string,
+  imageUrl: string
+): Promise<{ recipient_id: string; message_id: string }> {
+  const response = await fetch(
+    `${instagramGraphBase()}/${instagramAccountId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        recipient: { id: userId },
+        message: {
+          attachment: {
+            type: "image",
+            payload: { url: imageUrl },
+          },
+        },
+      }),
+    }
+  );
+
+  return handleResponse(response);
+}
+
+/**
  * Send a direct message as a button template with up to 3 web_url buttons —
  * the reveal message plus tappable link buttons (cleaner than inline URLs).
  */
