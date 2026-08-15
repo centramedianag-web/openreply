@@ -51,7 +51,12 @@ export default function Sidebar({
         `}
       >
         <div className="px-6 py-5 border-b border-border">
-          <Link href="/dashboard" className="text-base font-semibold">
+          {/* The brand's one-gradient-per-view rule: the wordmark is where it
+              lands in the shell, so nothing else in the chrome competes. */}
+          <Link
+            href="/dashboard"
+            className="text-base font-bold tracking-tight gradient-text"
+          >
             OpenReply
           </Link>
         </div>
@@ -67,14 +72,20 @@ export default function Sidebar({
                 onClick={onClose}
                 aria-current={isActive ? "page" : undefined}
                 className={`
-                  block px-3 py-2.5 rounded text-sm
+                  relative block rounded-lg px-3 py-2.5 text-sm
                   ${
                     isActive
-                      ? "bg-surface-hover text-foreground font-medium"
-                      : "text-muted hover:text-foreground hover:bg-surface-hover"
+                      ? "bg-foreground/[0.06] text-foreground font-semibold"
+                      : "text-muted hover:text-foreground hover:bg-foreground/[0.03]"
                   }
                 `}
               >
+                {isActive && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-gradient-to-b from-gradient-blue via-gradient-violet to-gradient-magenta"
+                  />
+                )}
                 {item.label}
               </Link>
             );

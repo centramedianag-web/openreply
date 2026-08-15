@@ -2,6 +2,10 @@
  * Stat Card
  *
  * Metric panel with label, value, and optional trend.
+ *
+ * The label is a Space Mono eyebrow and the value uses tabular figures so a
+ * row of cards keeps its rhythm as numbers update. Trend keeps an arrow
+ * alongside the colour, because colour alone is not an accessible signal.
  */
 
 interface StatCardProps {
@@ -13,12 +17,18 @@ interface StatCardProps {
 
 export default function StatCard({ label, value, trend, trendUp }: StatCardProps) {
   return (
-    <div className="panel rounded p-4">
-      <p className="text-sm text-muted">{label}</p>
-      <p className="text-2xl font-semibold text-foreground mt-1">{value}</p>
+    <div className="panel p-5">
+      <p className="eyebrow">{label}</p>
+      <p className="tabular mt-2 text-3xl font-semibold text-foreground">
+        {value}
+      </p>
       {trend && (
-        <p className={`text-xs mt-1 ${trendUp ? "text-success" : "text-error"}`}>
-          {trendUp ? "Up" : "Down"} {trend}
+        <p
+          className={`mt-1.5 text-xs font-medium ${
+            trendUp ? "text-success" : "text-error"
+          }`}
+        >
+          <span aria-hidden="true">{trendUp ? "↑" : "↓"}</span> {trend}
         </p>
       )}
     </div>

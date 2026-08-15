@@ -9,6 +9,12 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    // Migrations need a DIRECT (unpooled) connection. Prisma takes a Postgres
+    // advisory lock before applying migrations, and a pooler hands each
+    // statement to a different backend, so the lock can never be held — the
+    // deploy fails with P1002 "Timed out trying to acquire a postgres advisory
+    // lock". Only the CLI reads this file; the app itself connects through
+    // lib/db/client.ts with the pooled DATABASE_URL, which is what it wants.
+    url: process.env["DIRECT_URL"] ?? process.env["DATABASE_URL"],
   },
 });
