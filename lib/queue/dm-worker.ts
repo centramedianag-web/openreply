@@ -290,6 +290,11 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     orderBy: { createdAt: "asc" },
   });
 
+  // Whether any campaign laid claim to this comment. Set on the match itself,
+  // not on a successful send: if a campaign matched but its DM failed, the
+  // comment still belongs to that campaign and the AI must stay out of it.
+  let claimedByCampaign = false;
+
   for (const automation of automations) {
     // "Any word" campaigns fire on every comment; otherwise require a keyword hit.
     const matchResult = automation.matchAnyWord
@@ -303,6 +308,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     if (!matchResult.matched) {
       continue;
     }
+
+    claimedByCampaign = true;
 
     const existingLog = await prisma.dmLog.findUnique({
       where: {
@@ -741,6 +748,18 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       throw error;
     }
   }
+
+  // Last, and only on what no campaign wanted. Reached either because the
+  // comment matched no keyword, or because the post has no campaign on it at
+  // all — in which case every comment on it arrives here.
+  if (!claimedByCampaign) {
+    await tryAiCommentReply(
+      instagramAccountId,
+      commentId,
+      commentText,
+      commenterId
+    );
+  }
 }
 
 /**
@@ -1013,6 +1032,31 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
  * campaign message. Returns false whenever AI is off, unconfigured, or fails,
  * and the caller carries on to the campaigns as though this did not exist.
  */
+/**
+ * Cost ceiling, shared by the DM and comment paths.
+ *
+ * Each reply is cheap (~₹0.08), but nothing upstream bounds how much arrives —
+ * a spam wave, or one reel that travels, can produce hundreds of events in
+ * minutes. Counting DMs and comment replies against one budget is deliberate:
+ * the bill is per account, not per channel.
+ */
+async function isOverDailyAiCap(
+  accountId: string,
+  username: string
+): Promise<boolean> {
+  const startOfDayUtc = new Date();
+  startOfDayUtc.setUTCHours(0, 0, 0, 0);
+  const repliesToday = await prisma.aiReply.count({
+    where: { instagramAccountId: accountId, createdAt: { gte: startOfDayUtc } },
+  });
+  if (repliesToday < AI_DAILY_REPLY_CAP) return false;
+
+  console.warn(
+    `[AI] daily cap of ${AI_DAILY_REPLY_CAP} reached for @${username}; skipping`
+  );
+  return true;
+}
+
 async function tryAiReply(
   instagramAccountId: string,
   messageId: string,
@@ -1027,21 +1071,7 @@ async function tryAiReply(
 
   if (!account?.aiEnabled || !account.aiBrain?.trim()) return false;
 
-  // Cost ceiling. Each reply is cheap (~₹0.08), but nothing upstream bounds how
-  // many inbound DMs arrive — a spam wave or a bad actor could otherwise bill
-  // without limit. Past the cap we return false rather than going silent, so the
-  // keyword campaigns answer exactly as they did before AI existed.
-  const startOfDayUtc = new Date();
-  startOfDayUtc.setUTCHours(0, 0, 0, 0);
-  const repliesToday = await prisma.aiReply.count({
-    where: { instagramAccountId: account.id, createdAt: { gte: startOfDayUtc } },
-  });
-  if (repliesToday >= AI_DAILY_REPLY_CAP) {
-    console.warn(
-      `[AI] daily cap of ${AI_DAILY_REPLY_CAP} reached for @${account.username}; falling back to campaigns`
-    );
-    return false;
-  }
+  if (await isOverDailyAiCap(account.id, account.username)) return false;
 
   const generated = await generateSmartReply(account.aiBrain, messageText);
   if (!generated) return false;
@@ -1053,7 +1083,8 @@ async function tryAiReply(
       data: {
         workspaceId: account.workspaceId,
         instagramAccountId: account.id,
-        messageId,
+        sourceId: messageId,
+        kind: "DM",
         senderId,
         inboundText: messageText,
         intent: generated.intent,
@@ -1075,7 +1106,7 @@ async function tryAiReply(
       generated.reply
     );
     await prisma.aiReply.update({
-      where: { messageId },
+      where: { sourceId: messageId },
       data: { status: "SENT", sentAt: new Date() },
     });
     console.log(
@@ -1084,13 +1115,114 @@ async function tryAiReply(
     return true;
   } catch (error) {
     await prisma.aiReply.update({
-      where: { messageId },
+      where: { sourceId: messageId },
       data: { status: "FAILED", errorMessage: formatError(error) },
     });
     console.error(`[AI] send failed for ${messageId}:`, formatError(error));
     // The row stays, so the campaigns do not now fire on top of a failed AI
     // attempt and produce a second, unrelated message.
     return true;
+  }
+}
+
+/**
+ * Post a public reply to a comment that no campaign claimed.
+ *
+ * The ordering is the whole design. On a keyword reel ("comment PRICE below"),
+ * every comment carrying the keyword is claimed by the campaign and never
+ * reaches here, so the funnel the client paid to promote is untouched. What
+ * reaches here is the remainder — "🔥🔥", "nice work bro", "kuthe ahe he?" —
+ * which today gets nothing at all. On a reel with no campaign on it, nothing
+ * is claimed, so every comment lands here.
+ *
+ * That means the AI never has to work out whether a reel is a keyword reel.
+ * It cannot, and asking it to would fail on exactly the reel that matters most.
+ *
+ * Public replies only. Meta permits one private reply per comment for all time,
+ * and a campaign may already have spent it; a public reply has no such limit.
+ *
+ * Never throws: a failed comment reply must not fail the job, because the job's
+ * campaign leg has already sent real DMs and a retry would send them twice.
+ */
+async function tryAiCommentReply(
+  instagramAccountId: string,
+  commentId: string,
+  commentText: string,
+  commenterId: string
+): Promise<void> {
+  if (!isAiConfigured()) return;
+  // Unlike DMs, the comments webhook does deliver empty text (a comment that is
+  // only a sticker or a mention), and there is nothing for the model to answer.
+  if (!commentText.trim()) return;
+
+  const account = await prisma.instagramAccount.findUnique({
+    where: { instagramId: instagramAccountId },
+  });
+
+  if (!account?.aiCommentsEnabled || !account.aiBrain?.trim()) return;
+  if (!account.accessToken) return;
+  if (await isOverDailyAiCap(account.id, account.username)) return;
+
+  const generated = await generateSmartReply(
+    account.aiBrain,
+    commentText,
+    "comment"
+  );
+  if (!generated) return;
+
+  // Written before the send, so a retried job collides on sourceId and gives up
+  // rather than posting a second public reply under the client's own post.
+  try {
+    await prisma.aiReply.create({
+      data: {
+        workspaceId: account.workspaceId,
+        instagramAccountId: account.id,
+        sourceId: commentId,
+        kind: "COMMENT",
+        senderId: commenterId,
+        inboundText: commentText,
+        intent: generated.intent,
+        handoff: generated.handoff,
+        replyText: generated.reply,
+      },
+    });
+  } catch {
+    console.log(`[AI] comment ${commentId} already answered, skipping`);
+    return;
+  }
+
+  // Spam is classified and then dropped rather than filtered before the call:
+  // we only know it is spam because the model read it. Replying would put the
+  // spammer's comment in front of the client's whole audience, so the row is
+  // kept (retries stay deduped and the cost is recorded) and nothing is sent.
+  if (generated.intent === "spam") {
+    await prisma.aiReply.update({
+      where: { sourceId: commentId },
+      data: { status: "SKIPPED_SPAM" },
+    });
+    console.log(`[AI] comment ${commentId} looks like spam, not replying`);
+    return;
+  }
+
+  try {
+    const accessToken = decryptToken(account.accessToken);
+    await sendCommentReply(accessToken, commentId, generated.reply);
+    await prisma.aiReply.update({
+      where: { sourceId: commentId },
+      data: { status: "SENT", sentAt: new Date() },
+    });
+    console.log(
+      `[AI] replied to comment ${commentId} (${generated.intent})`
+    );
+  } catch (error) {
+    await prisma.aiReply.update({
+      where: { sourceId: commentId },
+      data: { status: "FAILED", errorMessage: formatError(error) },
+    });
+    console.error(
+      `[AI] comment reply failed for ${commentId}:`,
+      formatError(error)
+    );
   }
 }
 

@@ -29,7 +29,13 @@ export async function GET() {
   const accounts = await prisma.instagramAccount.findMany({
     where: { workspaceId },
     orderBy: { connectedAt: "desc" },
-    select: { id: true, username: true, aiEnabled: true, aiBrain: true },
+    select: {
+      id: true,
+      username: true,
+      aiEnabled: true,
+      aiCommentsEnabled: true,
+      aiBrain: true,
+    },
   });
 
   return NextResponse.json({
@@ -55,6 +61,7 @@ export async function PATCH(request: Request) {
   const body = (await request.json()) as {
     instagramAccountId?: string;
     aiEnabled?: boolean;
+    aiCommentsEnabled?: boolean;
     aiBrain?: string;
   };
 
@@ -94,7 +101,7 @@ export async function PATCH(request: Request) {
 
   // Turning AI on without a brain would send the model into a client's inbox
   // with nothing to go on, and it would invent a business. Refuse instead.
-  if (body.aiEnabled === true && !nextBrain) {
+  if ((body.aiEnabled === true || body.aiCommentsEnabled === true) && !nextBrain) {
     return NextResponse.json(
       { success: false, error: "Write a brain before turning replies on." },
       { status: 400 }
@@ -106,8 +113,17 @@ export async function PATCH(request: Request) {
     data: {
       ...(body.aiBrain === undefined ? {} : { aiBrain: nextBrain || null }),
       ...(body.aiEnabled === undefined ? {} : { aiEnabled: body.aiEnabled }),
+      ...(body.aiCommentsEnabled === undefined
+        ? {}
+        : { aiCommentsEnabled: body.aiCommentsEnabled }),
     },
-    select: { id: true, username: true, aiEnabled: true, aiBrain: true },
+    select: {
+      id: true,
+      username: true,
+      aiEnabled: true,
+      aiCommentsEnabled: true,
+      aiBrain: true,
+    },
   });
 
   return NextResponse.json({ success: true, data: { account: updated } });

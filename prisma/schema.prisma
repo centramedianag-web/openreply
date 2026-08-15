@@ -141,6 +141,11 @@ model InstagramAccount {
   /// Off by default. An account only starts replying with AI once someone has
   /// written a brain for it and turned this on deliberately.
   aiEnabled         Boolean  @default(false)
+  /// Separate from aiEnabled, and separately off by default. A DM is private
+  /// and reversible in practice; a comment reply is published under the
+  /// client's name where their whole audience sees it. That is a bigger step
+  /// than turning on DM replies, so it is never implied by it.
+  aiCommentsEnabled Boolean  @default(false)
   /// What the model is allowed to know about this client: who they are, what
   /// they sell, tone, and what to do with enquiries it must not answer.
   aiBrain           String?
@@ -251,7 +256,13 @@ model AiReply {
   workspaceId        String
   instagramAccountId String
 
-  messageId    String  @unique
+  /// The Meta id of whatever is being answered: a message id for a DM, a
+  /// comment id for a public reply. Both come from the same id space, so one
+  /// unique column safely dedupes both. The column keeps its original name so
+  /// that adding comments needed no data migration.
+  sourceId     String  @unique @map("messageId")
+  /// "DM" or "COMMENT".
+  kind         String  @default("DM")
   senderId     String
   inboundText  String
   intent       String

@@ -35,22 +35,60 @@ export interface SmartReply {
   reply: string;
 }
 
+/**
+ * Which channel the reply is for.
+ *
+ * "dm" is a private one-to-one conversation: it can be a few sentences and can
+ * ask for a phone number. "comment" is published under the post for the whole
+ * audience, so it must be short and must never ask anyone to post personal
+ * details in public.
+ */
+export type SmartReplyMode = "dm" | "comment";
+
 export function isAiConfigured(): boolean {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
-function buildSystemPrompt(brain: string): string {
+/**
+ * Exported for testing. The liability rules have to hold in BOTH modes, and the
+ * only cheap way to stop a future edit quietly dropping them from one of them
+ * is to assert on the assembled prompt.
+ */
+export function buildSystemPrompt(brain: string, mode: SmartReplyMode): string {
+  const channelRules =
+    mode === "comment"
+      ? [
+          "You are writing a PUBLIC reply under an Instagram post. Everyone who",
+          "sees the post sees your reply, including the person's own followers.",
+          "",
+          "Reply in the same language the commenter used, including Hinglish and",
+          "romanised Marathi. Keep it under 12 words — a comment reply is a nod,",
+          "not a pitch. At most one emoji.",
+          "",
+          "NEVER ask anyone to post a phone number, email or address in a public",
+          "comment. If they want something that needs those, invite them to send",
+          "a DM instead.",
+          "Do not paste the same sentence you would send in a DM; this is a",
+          "public acknowledgement, so it should read like a person replying.",
+        ]
+      : [
+          "You are replying to an Instagram direct message. The conversation is",
+          "private, between you and one person.",
+          "",
+          "Reply in the same language the person wrote in, including Hinglish and",
+          "romanised Marathi. Keep replies under 40 words. Warm and plain. At most",
+          "one emoji, and none at all in a reply that declines something.",
+        ];
+
   return [
-    "You are replying to Instagram direct messages as the business described below.",
+    "You are replying on Instagram as the business described below.",
     "You are the business itself, not an assistant, and never mention being an AI.",
     "",
     "=== WHAT YOU KNOW ===",
     brain.trim(),
     "=== END ===",
     "",
-    "Reply in the same language the person wrote in, including Hinglish and",
-    "romanised Marathi. Keep replies under 40 words. Warm and plain. At most one",
-    "emoji, and none at all in a reply that declines something.",
+    ...channelRules,
     "",
     "Return ONLY JSON, shaped exactly like this:",
     '{"intent":"greeting|collab|enquiry|followup|jobseeker|spam|other","handoff":true|false,"reply":"..."}',
@@ -81,7 +119,8 @@ function buildSystemPrompt(brain: string): string {
  */
 export async function generateSmartReply(
   brain: string,
-  message: string
+  message: string,
+  mode: SmartReplyMode = "dm"
 ): Promise<SmartReply | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || !brain.trim() || !message.trim()) return null;
@@ -98,7 +137,7 @@ export async function generateSmartReply(
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          systemInstruction: { parts: [{ text: buildSystemPrompt(brain) }] },
+          systemInstruction: { parts: [{ text: buildSystemPrompt(brain, mode) }] },
           contents: [{ role: "user", parts: [{ text: message.slice(0, 4000) }] }],
           generationConfig: {
             temperature: 0.4,

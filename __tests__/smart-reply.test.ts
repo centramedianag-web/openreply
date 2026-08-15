@@ -8,7 +8,58 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { parseSmartReply } from "../lib/ai/smart-reply";
+import { buildSystemPrompt, parseSmartReply } from "../lib/ai/smart-reply";
+
+describe("buildSystemPrompt", () => {
+  const brain = "Mauli Infra builds homes in Nagpur. Sales: +91 90000 00000.";
+
+  it("embeds the brain in both modes", () => {
+    expect(buildSystemPrompt(brain, "dm")).toContain("Mauli Infra builds homes");
+    expect(buildSystemPrompt(brain, "comment")).toContain(
+      "Mauli Infra builds homes"
+    );
+  });
+
+  // The rule that stops a wrong number going out under the client's name. It
+  // has to survive in every channel, not just the one it was written for.
+  it.each(["dm", "comment"] as const)(
+    "keeps the never-state-a-figure rule in %s mode",
+    (mode) => {
+      const prompt = buildSystemPrompt(brain, mode);
+      expect(prompt).toContain("NEVER state a price");
+      expect(prompt).toContain("Never invent a figure");
+      expect(prompt).toContain("even if the fact appears");
+    }
+  );
+
+  it("tells comment mode it is public and DM mode it is private", () => {
+    expect(buildSystemPrompt(brain, "comment")).toContain("PUBLIC reply");
+    expect(buildSystemPrompt(brain, "dm")).toContain("private");
+    expect(buildSystemPrompt(brain, "dm")).not.toContain("PUBLIC reply");
+  });
+
+  it("asks for a far shorter reply in comment mode", () => {
+    expect(buildSystemPrompt(brain, "comment")).toContain("under 12 words");
+    expect(buildSystemPrompt(brain, "dm")).toContain("under 40 words");
+  });
+
+  // Asking someone to post a phone number under a public post exposes them to
+  // every other reader of that post.
+  it("forbids asking for personal details publicly, in comment mode only", () => {
+    const comment = buildSystemPrompt(brain, "comment");
+    expect(comment).toContain("NEVER ask anyone to post a phone number");
+    expect(comment).toContain("invite them to send");
+    expect(buildSystemPrompt(brain, "dm")).not.toContain(
+      "NEVER ask anyone to post a phone number"
+    );
+  });
+
+  it("defaults to dm mode", () => {
+    // generateSmartReply's default parameter must not silently become the
+    // public-facing prompt.
+    expect(buildSystemPrompt(brain, "dm")).not.toContain("PUBLIC");
+  });
+});
 
 describe("parseSmartReply", () => {
   it("parses a well-formed reply", () => {

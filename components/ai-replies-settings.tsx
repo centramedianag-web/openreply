@@ -8,7 +8,40 @@ interface AiAccount {
   id: string;
   username: string;
   aiEnabled: boolean;
+  aiCommentsEnabled: boolean;
   aiBrain: string | null;
+}
+
+function Toggle({
+  on,
+  label,
+  disabled,
+  onClick,
+}: {
+  on: boolean;
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className={`relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+        on ? "bg-accent" : "bg-border"
+      }`}
+    >
+      <span
+        className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-transform ${
+          on ? "translate-x-6" : "translate-x-1"
+        }`}
+      />
+    </button>
+  );
 }
 
 const BRAIN_PLACEHOLDER = `Who the business is, what it sells, and where enquiries should go. For example:
@@ -52,7 +85,7 @@ export function AiRepliesSettings() {
 
   async function patch(
     accountId: string,
-    body: { aiEnabled?: boolean; aiBrain?: string },
+    body: { aiEnabled?: boolean; aiCommentsEnabled?: boolean; aiBrain?: string },
     busyKey: string
   ) {
     setBusy(busyKey);
@@ -85,9 +118,10 @@ export function AiRepliesSettings() {
     <section className="panel rounded p-4 sm:p-6">
       <h2 className="text-base font-semibold">AI Replies</h2>
       <p className="mt-1 text-xs text-muted">
-        Answers incoming DMs in the sender&apos;s own language. It will never
-        state a price, size, date or availability — those are handed to a human
-        instead, even if you write them below.
+        Answers in the sender&apos;s own language. It will never state a price,
+        size, date or availability — those are handed to a human instead, even
+        if you write them below. Comment replies only ever go to comments no
+        campaign matched, so keyword campaigns are never intercepted.
       </p>
 
       {!aiConfigured && (
@@ -114,41 +148,61 @@ export function AiRepliesSettings() {
               key={account.id}
               className="rounded border border-border bg-surface/70 p-4"
             >
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-foreground">
-                    @{account.username}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted">
-                    {account.aiEnabled
-                      ? "Replying automatically"
-                      : "Off — campaigns handle DMs"}
-                  </p>
+              <p className="text-sm font-semibold text-foreground">
+                @{account.username}
+              </p>
+
+              <div className="mt-3 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-foreground">
+                      Reply to DMs
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted">
+                      {account.aiEnabled
+                        ? "Answering direct messages"
+                        : "Off — campaigns handle DMs"}
+                    </p>
+                  </div>
+                  <Toggle
+                    on={account.aiEnabled}
+                    label={`AI DM replies for @${account.username}`}
+                    disabled={busy === `toggle:${account.id}`}
+                    onClick={() =>
+                      patch(
+                        account.id,
+                        { aiEnabled: !account.aiEnabled },
+                        `toggle:${account.id}`
+                      )
+                    }
+                  />
                 </div>
 
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={account.aiEnabled}
-                  aria-label={`AI replies for @${account.username}`}
-                  disabled={busy === `toggle:${account.id}`}
-                  onClick={() =>
-                    patch(
-                      account.id,
-                      { aiEnabled: !account.aiEnabled },
-                      `toggle:${account.id}`
-                    )
-                  }
-                  className={`relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-                    account.aiEnabled ? "bg-accent" : "bg-border"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-transform ${
-                      account.aiEnabled ? "translate-x-6" : "translate-x-1"
-                    }`}
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+                  <div>
+                    <p className="text-xs font-medium text-foreground">
+                      Reply to comments{" "}
+                      <span className="font-normal text-muted">(public)</span>
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted">
+                      {account.aiCommentsEnabled
+                        ? "Replying under posts no campaign covers"
+                        : "Off — comments are left alone"}
+                    </p>
+                  </div>
+                  <Toggle
+                    on={account.aiCommentsEnabled}
+                    label={`AI comment replies for @${account.username}`}
+                    disabled={busy === `comments:${account.id}`}
+                    onClick={() =>
+                      patch(
+                        account.id,
+                        { aiCommentsEnabled: !account.aiCommentsEnabled },
+                        `comments:${account.id}`
+                      )
+                    }
                   />
-                </button>
+                </div>
               </div>
 
               <label
