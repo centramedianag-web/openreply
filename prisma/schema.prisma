@@ -182,7 +182,13 @@ model Automation {
   // keywords above. Independent of the post trigger — a DM has no media, so
   // postId / matchAnyPost do not apply to it.
   dmTriggerEnabled Boolean @default(false)
+  // dmMessage is the single source of truth when dmMessages is empty. When the
+  // pool has entries one is picked at random per send, so a campaign firing
+  // hundreds of times does not put the identical string in hundreds of inboxes
+  // — the pattern Instagram's spam heuristics look for. Mirrors
+  // publicReplyMessage / publicReplyMessages.
   dmMessage      String
+  dmMessages     String[] @default([])
   openingDmEnabled     Boolean @default(false)
   openingDmMessage     String?
   openingDmButtonLabel String?

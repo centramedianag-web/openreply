@@ -109,8 +109,31 @@ function buildInlineLinkFallback(
   return extraUrls.length > 0 ? `${base}\n${extraUrls.join("\n")}` : base;
 }
 
+/**
+ * Choose the text for a single DM send.
+ *
+ * With variations configured one is picked at random, so a campaign that fires
+ * hundreds of times does not drop the identical string into hundreds of
+ * inboxes. `dmMessage` stays the fallback, which keeps every campaign created
+ * before variations existed working untouched.
+ *
+ * Call this ONCE per send and reuse the result: the button template and its
+ * inline-link fallback are two attempts at delivering the same message, so
+ * re-picking between them could send a different variation than the one the
+ * recipient was about to get.
+ */
+export function pickDmMessage(automation: {
+  dmMessage: string;
+  dmMessages?: string[];
+}): string {
+  const pool = automation.dmMessages ?? [];
+  if (pool.length === 0) return automation.dmMessage;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 type RevealAutomation = {
   dmMessage: string;
+  dmMessages?: string[];
   linkButtonLabel: string | null;
   trackedLinks: WorkerTrackedLink[];
   instagramAccount: { instagramId: string };
@@ -128,13 +151,17 @@ async function sendRevealDirectMessage(
   commenterName: string | null,
   context: string
 ): Promise<void> {
+  // Resolved once so the button attempt and the inline fallback below deliver
+  // the same variation.
+  const chosenMessage = pickDmMessage(automation);
+
   if (automation.trackedLinks.length === 0) {
     await sendDirectMessage(
       accessToken,
       automation.instagramAccount.instagramId,
       userId,
       renderMessageWithTracking({
-        message: automation.dmMessage,
+        message: chosenMessage,
         commenterName,
         trackedLinks: automation.trackedLinks,
       })
@@ -145,7 +172,7 @@ async function sendRevealDirectMessage(
   // Try button template first; if Meta rejects it, fall back to inline links.
   const bodyText =
     renderMessageWithoutLink({
-      message: automation.dmMessage,
+      message: chosenMessage,
       commenterName,
     }) || "Here's your link:";
   const buttons = buildLinkButtons(
@@ -176,7 +203,7 @@ async function sendRevealDirectMessage(
         automation.instagramAccount.instagramId,
         userId,
         buildInlineLinkFallback(
-          automation.dmMessage,
+          chosenMessage,
           commenterName,
           automation.trackedLinks,
           bodyText
@@ -573,10 +600,13 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           `followcheck:${automation.id}`
         );
       } else if (automation.trackedLinks.length > 0) {
+        // Resolved once so the button attempt and the inline fallback below
+        // deliver the same variation.
+        const chosenMessage = pickDmMessage(automation);
         // Try button template first; if Meta rejects it, fall back to inline links.
         const bodyText =
           renderMessageWithoutLink({
-            message: automation.dmMessage,
+            message: chosenMessage,
             commenterName,
           }) || "Here's your link:";
         const buttons = buildLinkButtons(
@@ -603,7 +633,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
             formatError(buttonError)
           );
           const fallbackMessage = buildInlineLinkFallback(
-            automation.dmMessage,
+            chosenMessage,
             commenterName,
             automation.trackedLinks,
             bodyText
@@ -624,7 +654,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         }
       } else {
         const dmMessage = renderMessageWithTracking({
-          message: automation.dmMessage,
+          message: pickDmMessage(automation),
           commenterName,
           trackedLinks: automation.trackedLinks,
         });

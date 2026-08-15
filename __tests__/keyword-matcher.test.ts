@@ -101,6 +101,47 @@ describe("matchKeywords — partial matching", () => {
   });
 });
 
+describe("matchKeywords — Devanagari (Hindi / Marathi)", () => {
+  it("should keep Devanagari text instead of stripping it to nothing", () => {
+    expect(stripSpecialCharacters("किंमत काय आहे")).toBe("किंमत काय आहे");
+  });
+
+  it("should preserve matras (combining marks)", () => {
+    // Without \p{M} the vowel signs are dropped and "किंमत" becomes "कमत".
+    expect(stripSpecialCharacters("किंमत")).toBe("किंमत");
+  });
+
+  it("should match a Marathi keyword", () => {
+    const result = matchKeywords("किंमत काय आहे", ["किंमत"], true);
+    expect(result.matched).toBe(true);
+    expect(result.matchedKeyword).toBe("किंमत");
+  });
+
+  it("should match a Hindi keyword", () => {
+    expect(matchKeywords("कीमत क्या है", ["कीमत"], true).matched).toBe(true);
+    expect(matchKeywords("लोकेशन बताओ", ["लोकेशन"], true).matched).toBe(true);
+  });
+
+  it("should match Devanagari mixed with latin text", () => {
+    const result = matchKeywords("price किंमत", ["किंमत"], true);
+    expect(result.matched).toBe(true);
+  });
+
+  it("should still match romanised Hinglish", () => {
+    expect(matchKeywords("kitna ka hai bhai", ["kitna"], true).matched).toBe(true);
+    expect(matchKeywords("jagah kahan hai", ["jagah"], true).matched).toBe(true);
+  });
+
+  it("should not match an unrelated Devanagari keyword", () => {
+    const result = matchKeywords("किंमत काय आहे", ["लोकेशन"], true);
+    expect(result.matched).toBe(false);
+  });
+
+  it("should strip emojis around Devanagari", () => {
+    expect(matchKeywords("🔥 किंमत 🔥", ["किंमत"], true).matched).toBe(true);
+  });
+});
+
 describe("matchKeywords — edge cases", () => {
   it("should return false for empty comment text", () => {
     const result = matchKeywords("", ["link"], true);

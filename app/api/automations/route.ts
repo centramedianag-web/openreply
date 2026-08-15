@@ -28,6 +28,7 @@ const createAutomationSchema = z
     matchAnyWord: z.boolean().optional().default(false),
     dmTriggerEnabled: z.boolean().optional().default(false),
     dmMessage: z.string().min(1).max(1000),
+    dmMessages: z.array(z.string().max(1000)).max(10).optional().default([]),
     openingDmEnabled: z.boolean().optional().default(false),
     openingDmMessage: z.string().max(1000).optional().nullable(),
     openingDmButtonLabel: z.string().max(64).optional().nullable(),
@@ -91,6 +92,7 @@ const updateAutomationSchema = z.object({
   matchAnyWord: z.boolean().optional(),
   dmTriggerEnabled: z.boolean().optional(),
   dmMessage: z.string().min(1).max(1000).optional(),
+  dmMessages: z.array(z.string().max(1000)).max(10).optional(),
   openingDmEnabled: z.boolean().optional(),
   openingDmMessage: z.string().max(1000).optional().nullable(),
   openingDmButtonLabel: z.string().max(64).optional().nullable(),
@@ -382,6 +384,9 @@ export async function POST(request: NextRequest) {
   )
     .map((m) => m.trim())
     .filter(Boolean);
+  const dmMessageList = parsed.data.dmMessages
+    .map((m) => m.trim())
+    .filter(Boolean);
 
   const automation = await prisma.automation.create({
     data: {
@@ -395,7 +400,10 @@ export async function POST(request: NextRequest) {
       keywords: matchAnyWord ? [] : parsed.data.keywords,
       matchAnyWord,
       dmTriggerEnabled: parsed.data.dmTriggerEnabled,
-      dmMessage: parsed.data.dmMessage,
+      // dmMessage stays populated even when variations are used: it is NOT NULL
+      // and is the fallback the worker sends when the pool is empty.
+      dmMessage: dmMessageList[0] ?? parsed.data.dmMessage,
+      dmMessages: dmMessageList,
       openingDmEnabled,
       openingDmMessage: openingDmEnabled
         ? parsed.data.openingDmMessage || null
@@ -534,6 +542,15 @@ export async function PATCH(request: NextRequest) {
   if (automationData.publicReplyEnabled === false) {
     automationData.publicReplyMessages = [];
     automationData.publicReplyMessage = null;
+  }
+  // Same for the DM variations, except dmMessage is NOT NULL: it keeps the
+  // first variation rather than being cleared, so it stays a valid fallback.
+  if (automationData.dmMessages !== undefined) {
+    const list = automationData.dmMessages.map((m) => m.trim()).filter(Boolean);
+    automationData.dmMessages = list;
+    if (list.length > 0) {
+      automationData.dmMessage = list[0];
+    }
   }
 
   const updated = await prisma.automation.update({

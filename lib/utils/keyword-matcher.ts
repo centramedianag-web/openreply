@@ -15,7 +15,13 @@ export interface KeywordMatchResult {
 
 /**
  * Strip emojis and special characters from text, keeping only
- * alphanumeric characters and whitespace.
+ * letters, numbers and whitespace — in any script.
+ *
+ * Letters are matched with the Unicode property \p{L} rather than \w, because
+ * \w is ASCII-only: it would reduce "किंमत काय आहे" to an empty string and the
+ * keyword would silently never match. Indian audiences comment and DM in
+ * Devanagari as often as in romanised Hinglish, so both have to survive here.
+ * \p{M} keeps combining marks (matras), without which "किंमत" loses its vowels.
  */
 export function stripSpecialCharacters(text: string): string {
   // Remove emoji ranges and other special unicode chars
@@ -24,9 +30,20 @@ export function stripSpecialCharacters(text: string): string {
       /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{200D}\u{20E3}]/gu,
       ""
     )
-    .replace(/[^\w\s]/g, " ")
+    .replace(/[^\p{L}\p{N}\p{M}_\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * True when the string contains a character outside the ASCII range that \b
+ * understands. JavaScript's \b sits between a \w and a non-\w character, and
+ * \w is ASCII-only, so every Devanagari character counts as a boundary: a
+ * "whole word" search for "किंमत" matches nothing at all. For those scripts we
+ * fall back to substring matching, which is the behaviour users expect anyway.
+ */
+function hasNonAsciiWordChars(text: string): boolean {
+  return /[^\p{ASCII}]/u.test(text);
 }
 
 /**
@@ -58,7 +75,7 @@ export function matchKeywords(
 
     if (!cleanedKeyword) continue;
 
-    if (wholeWordMatch) {
+    if (wholeWordMatch && !hasNonAsciiWordChars(cleanedKeyword)) {
       // Build a regex for whole-word matching
       const escapedKeyword = cleanedKeyword.replace(
         /[.*+?^${}()|[\]\\]/g,

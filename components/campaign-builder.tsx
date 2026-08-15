@@ -38,6 +38,7 @@ interface LoadedCampaign {
   matchAnyWord: boolean;
   dmTriggerEnabled: boolean;
   dmMessage: string;
+  dmMessages: string[];
   openingDmEnabled: boolean;
   openingDmMessage: string | null;
   openingDmButtonLabel: string | null;
@@ -167,6 +168,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [openingDmButtonLabel, setOpeningDmButtonLabel] = useState("");
 
   const [dmMessage, setDmMessage] = useState("");
+  // Extra wordings beyond the main one above. Stored as [dmMessage, ...these]
+  // so the primary message is always variation one.
+  const [dmMessageVariations, setDmMessageVariations] = useState<string[]>([]);
   const [linkOpen, setLinkOpen] = useState(false);
   const [trackedDestinationUrl, setTrackedDestinationUrl] = useState("");
   const [linkButtonLabel, setLinkButtonLabel] = useState("Open link");
@@ -271,6 +275,8 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         setOpeningDmMessage(c.openingDmMessage ?? "");
         setOpeningDmButtonLabel(c.openingDmButtonLabel ?? "");
         setDmMessage(c.dmMessage);
+        // Variation one is the primary message, so only the rest go in the list.
+        setDmMessageVariations(c.dmMessages?.slice(1) ?? []);
         setLinkButtonLabel(c.linkButtonLabel ?? "Open link");
         setIsActive(c.isActive);
         const link = c.trackedLinks?.[0]?.destinationUrl ?? "";
@@ -408,6 +414,11 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       keywords: matchMode === "any" ? [] : keywords,
       dmTriggerEnabled,
       dmMessage,
+      // Only send a pool when there is something to rotate between; a lone
+      // message stays in dmMessage and the worker uses it directly.
+      dmMessages: dmMessageVariations.some((m) => m.trim())
+        ? [dmMessage, ...dmMessageVariations].map((m) => m.trim()).filter(Boolean)
+        : [],
       openingDmEnabled,
       openingDmMessage: openingDmEnabled ? openingDmMessage : null,
       openingDmButtonLabel: openingDmEnabled ? openingDmButtonLabel : null,
@@ -873,6 +884,49 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
               maxLength={1000}
             />
+            {dmMessageVariations.map((msg, i) => (
+              <div key={i} className="flex items-start gap-2">
+                <textarea
+                  value={msg}
+                  onChange={(e) =>
+                    setDmMessageVariations((prev) =>
+                      prev.map((m, idx) => (idx === i ? e.target.value : m))
+                    )
+                  }
+                  placeholder={`Another way of saying it (version ${i + 2})`}
+                  rows={2}
+                  maxLength={1000}
+                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDmMessageVariations((prev) =>
+                      prev.filter((_, idx) => idx !== i)
+                    )
+                  }
+                  className="shrink-0 px-2 py-2 text-muted hover:text-error"
+                  aria-label="Remove version"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            {dmMessageVariations.length < 9 && (
+              <button
+                type="button"
+                onClick={() => setDmMessageVariations((prev) => [...prev, ""])}
+                className="text-xs font-medium text-accent hover:underline"
+              >
+                + Add another version of this DM
+              </button>
+            )}
+            {dmMessageVariations.length > 0 && (
+              <p className="text-xs text-muted">
+                One version is picked at random per send, so hundreds of people
+                don&apos;t all receive the identical message.
+              </p>
+            )}
             {linkOpen ? (
               <div className="space-y-2">
                 <input

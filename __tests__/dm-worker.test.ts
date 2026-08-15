@@ -128,7 +128,44 @@ vi.mock("bullmq", () => {
   };
 });
 
-import { createDMWorker } from "../lib/queue/dm-worker";
+import { createDMWorker, pickDmMessage } from "../lib/queue/dm-worker";
+
+describe("pickDmMessage", () => {
+  it("falls back to dmMessage when there are no variations", () => {
+    expect(pickDmMessage({ dmMessage: "only one", dmMessages: [] })).toBe(
+      "only one"
+    );
+  });
+
+  it("falls back when dmMessages is absent entirely (legacy campaigns)", () => {
+    expect(pickDmMessage({ dmMessage: "legacy" })).toBe("legacy");
+  });
+
+  it("always returns a message from the pool when one exists", () => {
+    const pool = ["a", "b", "c"];
+    for (let i = 0; i < 50; i++) {
+      expect(pool).toContain(
+        pickDmMessage({ dmMessage: "unused fallback", dmMessages: pool })
+      );
+    }
+  });
+
+  it("ignores dmMessage once variations are configured", () => {
+    for (let i = 0; i < 25; i++) {
+      expect(
+        pickDmMessage({ dmMessage: "should not appear", dmMessages: ["x"] })
+      ).toBe("x");
+    }
+  });
+
+  it("actually rotates rather than always picking the first", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      seen.add(pickDmMessage({ dmMessage: "f", dmMessages: ["a", "b", "c"] }));
+    }
+    expect(seen.size).toBe(3);
+  });
+});
 
 const usagePeriodStart = new Date("2026-05-01T00:00:00.000Z");
 
