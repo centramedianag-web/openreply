@@ -31,6 +31,16 @@ const {
     instagramAccount: {
       findUnique: vi.fn(),
     },
+    // Every campaign is asked whether it has a menu before the flat dmMessage
+    // path runs. These tests all cover flat campaigns, so the default is "no
+    // entry step" — set per-test when exercising a menu.
+    automationStep: {
+      findFirst: vi.fn(),
+      findUnique: vi.fn(),
+    },
+    aiIntentAsset: {
+      findUnique: vi.fn(),
+    },
     operationalEvent: {
       create: vi.fn(),
     },
@@ -250,6 +260,10 @@ beforeEach(() => {
 
   mockPrisma.automation.findMany.mockResolvedValue([mockAutomation]);
   mockPrisma.automation.findFirst.mockResolvedValue(null);
+  // No menu by default — these campaigns take the flat dmMessage path.
+  mockPrisma.automationStep.findFirst.mockResolvedValue(null);
+  mockPrisma.automationStep.findUnique.mockResolvedValue(null);
+  mockPrisma.aiIntentAsset.findUnique.mockResolvedValue(null);
   mockPrisma.dmLog.findUnique.mockResolvedValue(null);
   mockPrisma.dmLog.create.mockResolvedValue({});
   // Two different lookups share findFirst: the cross-campaign private-reply

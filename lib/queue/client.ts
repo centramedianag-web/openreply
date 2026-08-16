@@ -42,6 +42,16 @@ export interface ProcessPostbackJob {
   payload: string;
   mid?: string;
   fallback?: boolean;
+  // Set when this job is the re-enqueued half of a step whose delaySeconds has
+  // now elapsed. Without it a delayed step would re-schedule itself forever,
+  // since the handler cannot otherwise tell "waited already" from "just
+  // arrived".
+  delayApplied?: boolean;
+  // How many auto-advancing steps have already been delivered from the tap
+  // that started this chain. Carried through the queue because a delayed step
+  // leaves the worker and comes back: without it the count would reset to zero
+  // on every pause, and the loop guard would only ever catch instant chains.
+  stepHop?: number;
 }
 
 // Scheduled after the link is delivered, to send the appreciation follow-up.

@@ -158,6 +158,7 @@ model InstagramAccount {
   linkClicks  LinkClick[]
   followerSnapshots FollowerSnapshot[]
   aiReplies   AiReply[]
+  intentAssets AiIntentAsset[]
 
   @@index([workspaceId])
 }
@@ -239,10 +240,131 @@ model Automation {
   dmLogs           DmLog[]
   trackedLinks     TrackedLink[]
   linkClicks       LinkClick[]
+  steps            AutomationStep[]
 
   @@index([workspaceId])
   @@index([instagramAccountId])
   @@index([postId])
+}
+
+/// One screen of a branching DM menu: some text, optionally some images, and
+/// the buttons under it.
+///
+/// Steps are additive — a campaign with no steps behaves exactly as it did
+/// before, running the flat dmMessage path. A campaign with steps sends its
+/// entry step instead, and every button tap after that lands back here.
+///
+/// The graph is deliberately not validated into a tree. Menus loop: every leaf
+/// in the Chokar Dhani flow ends with a "back" button pointing at the menu that
+/// opened it, and a cycle is the correct shape for that, not a bug.
+model AutomationStep {
+  id           String @id @default(cuid())
+  automationId String
+
+  /// Shown only in the builder, so an editor can tell two menus apart.
+  name String?
+  /// The message body. Merge tags ({{first_name}}) are substituted at send
+  /// time — see lib/dm/merge-tags.ts.
+  text String
+  /// Sent as separate image messages before the text, in order. Meta fetches
+  /// each URL server-side, so they must be publicly reachable (8MB, PNG/JPEG).
+  /// A list rather than a single URL because a rate card and a menu card are
+  /// two images answering one question.
+  imageUrls String[] @default([])
+  /// Pause before this step is delivered. Seconds, not minutes, because the
+  /// flows worth mirroring use 7s "typing" beats as well as longer waits;
+  /// followUpDelayMinutes could not express either.
+  delaySeconds Int @default(0)
+
+  /// The step a campaign opens with. Exactly one per automation, enforced by
+  /// the partial unique index in the migration rather than in application code.
+  isEntry Boolean @default(false)
+
+  /// Deliver this step next, without waiting for a tap.
+  ///
+  /// Buttons cover branching; this covers sequence. A flow that says something,
+  /// pauses, then says the phone number is one thought delivered as two
+  /// messages — there is no choice to make, so asking the reader to press
+  /// something would be wrong. Combined with the next step's delaySeconds it
+  /// reproduces the timed beats real flows are written with.
+  ///
+  /// SetNull rather than Cascade: losing the follow-up should end the sequence,
+  /// not delete the message that came before it.
+  nextStepId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  automation   Automation             @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  next         AutomationStep?        @relation("StepChain", fields: [nextStepId], references: [id], onDelete: SetNull)
+  previous     AutomationStep[]       @relation("StepChain")
+  intentAssets AiIntentAsset[]
+  buttons      AutomationStepButton[] @relation("StepButtons")
+  /// Buttons elsewhere in the flow that point at this step. Named so the
+  /// cascade is explicit: deleting a step deletes the buttons leading to it,
+  /// which is what stops a tap from resolving to nothing.
+  incoming   AutomationStepButton[] @relation("ButtonTarget")
+
+  @@index([automationId])
+}
+
+/// Answer a recognised intent with a prepared step instead of the model's own
+/// words.
+///
+/// This exists for one case and generalises from it. The assistant is forbidden
+/// from stating a price, so "what's the entry fee?" gets a phone number — worse
+/// than the keyword bot it replaced, which answered instantly with a rate card.
+/// Mapping the "pricing" intent to a step sends that same rate card, except now
+/// it fires on any phrasing in any language rather than on ten guessed keywords.
+///
+/// The figure still never comes from the model. It comes from artwork the
+/// client publishes and reissues, which is where a price that has to stay
+/// current belongs.
+model AiIntentAsset {
+  id                 String @id @default(cuid())
+  instagramAccountId String
+  /// A SmartReplyIntent value. Deliberately a string, not an enum: the model's
+  /// intent list changes with the prompt, and a migration per new intent would
+  /// mean the prompt and the database have to ship together.
+  intent String
+  stepId String
+
+  createdAt DateTime @default(now())
+
+  instagramAccount InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+  step             AutomationStep   @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@unique([instagramAccountId, intent])
+  @@index([stepId])
+}
+
+/// A button under a step. Either it opens a URL or it moves to another step —
+/// never both, and never neither.
+///
+/// Meta's button template allows at most 3 buttons with 20-char titles; both
+/// caps are applied at send time rather than trusted here, so an over-long
+/// label degrades to a truncated button instead of a failed send.
+model AutomationStepButton {
+  id     String @id @default(cuid())
+  stepId String
+
+  label String
+  /// Set for a navigation button. The postback payload is `step:<targetStepId>`
+  /// — the step id alone, because a cuid is already globally unique and
+  /// carrying the automation id as well would only add a second thing to keep
+  /// in sync.
+  targetStepId String?
+  /// Set for a link button. Point this at a TrackedLink slug rather than the
+  /// destination directly when the click matters.
+  url String?
+
+  sort Int @default(0)
+
+  step   AutomationStep  @relation("StepButtons", fields: [stepId], references: [id], onDelete: Cascade)
+  target AutomationStep? @relation("ButtonTarget", fields: [targetStepId], references: [id], onDelete: Cascade)
+
+  @@index([stepId])
+  @@index([targetStepId])
 }
 
 /// One row per inbound DM the AI answered.

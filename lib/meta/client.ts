@@ -437,6 +437,82 @@ export async function sendDirectMessageWithLinkButton(
   return handleResponse(response);
 }
 
+/**
+ * A button under a menu step. Exactly one of `payload` and `url` is set: a
+ * payload navigates (Meta echoes it back as a `messaging_postbacks` webhook),
+ * a url opens the browser and produces no webhook at all.
+ */
+export interface MenuButton {
+  title: string;
+  payload?: string;
+  url?: string;
+}
+
+/**
+ * Meta's caps, applied here rather than trusted from the database: at most 3
+ * buttons, titles at most 20 characters. Truncating a long label costs a few
+ * characters; sending it costs the whole message, because Meta rejects the
+ * send outright and the user gets nothing.
+ *
+ * A button with neither payload nor url is dropped rather than sent as a dead
+ * control. The database CHECK constraint should make that unreachable — this
+ * is the belt to its braces, for rows written before the constraint existed.
+ */
+function toMenuButtons(buttons: MenuButton[]) {
+  return buttons
+    .slice(0, 3)
+    .map((b) => {
+      const title = b.title.slice(0, 20);
+      if (b.url) return { type: "web_url", url: b.url, title };
+      if (b.payload) return { type: "postback", title, payload: b.payload };
+      return null;
+    })
+    .filter((b): b is NonNullable<typeof b> => b !== null);
+}
+
+/**
+ * Send a direct message as a button template whose buttons may mix navigation
+ * and links — the menu primitive behind branching flows.
+ *
+ * Distinct from `sendDirectMessageWithLinkButton` (links only) and
+ * `sendDirectMessageWithButton` (exactly one postback) because a menu needs
+ * both kinds at once: "TICKETS" moves to another step while "BOOK NOW" opens
+ * the booking engine, and both sit under the same message.
+ */
+export async function sendDirectMessageWithMenu(
+  accessToken: string,
+  instagramAccountId: string,
+  userId: string,
+  text: string,
+  buttons: MenuButton[]
+): Promise<{ recipient_id: string; message_id: string }> {
+  const response = await fetch(
+    `${instagramGraphBase()}/${instagramAccountId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        recipient: { id: userId },
+        message: {
+          attachment: {
+            type: "template",
+            payload: {
+              template_type: "button",
+              text: text.slice(0, 640),
+              buttons: toMenuButtons(buttons),
+            },
+          },
+        },
+      }),
+    }
+  );
+
+  return handleResponse(response);
+}
+
 export async function sendCommentReply(
   accessToken: string,
   commentId: string,

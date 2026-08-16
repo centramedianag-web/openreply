@@ -9,6 +9,7 @@ import {
   verifyWebhookSignature,
 } from "@/lib/meta/webhook";
 import { MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from "@/lib/queue/client";
+import { buildRevealPayload } from "@/lib/dm/postback";
 import { Prisma } from "@/app/generated/prisma/client";
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
@@ -216,7 +217,7 @@ export async function POST(request: NextRequest) {
           {
             instagramAccountId: event.instagramAccountId,
             userId: event.userId,
-            payload: `reveal:${automation.id}`,
+            payload: buildRevealPayload(automation.id),
             fallback: true,
           },
           {

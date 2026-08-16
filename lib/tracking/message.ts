@@ -35,6 +35,33 @@ export function replaceUrlWithTrackedPlaceholder(
 }
 
 /**
+ * Substitute the recipient's name into a message.
+ *
+ * `{username}` is the house token. `{{first_name}}` is ManyChat's, accepted
+ * because flows migrated off that platform get pasted in as written, and a
+ * literal "{{first_name}}" landing in a stranger's inbox is a worse outcome
+ * than supporting a second spelling.
+ *
+ * The two are not aliases: `{{first_name}}` takes only the first word, because
+ * that is what it says and what the author expects when they typed it.
+ *
+ * Falls back to "there", so "Hey {username}" degrades to "Hey there" rather
+ * than to a gap or a raw token — the name is often missing, because Instagram
+ * only gives it to us on some events.
+ */
+export function personalize(
+  message: string,
+  commenterName?: string | null
+): string {
+  const full = commenterName?.trim() || "there";
+  const first = full.split(/\s+/)[0] || "there";
+
+  return message
+    .replace(/\{username\}/gi, full)
+    .replace(/\{\{\s*first_name\s*\}\}/gi, first);
+}
+
+/**
  * Personalize {username} and strip the {link} token — used when the link is
  * delivered as a separate button rather than inline in the message text.
  */
@@ -45,8 +72,7 @@ export function renderMessageWithoutLink({
   message: string;
   commenterName?: string | null;
 }) {
-  return message
-    .replace(/\{username\}/gi, commenterName ?? "there")
+  return personalize(message, commenterName)
     .replace(/\s*\{link\}\s*/gi, " ")
     .trim();
 }
@@ -72,7 +98,7 @@ export function renderMessageWithTracking({
   trackedLinks?: MessageTrackedLink[];
   baseUrl?: string;
 }) {
-  let rendered = message.replace(/\{username\}/gi, commenterName ?? "there");
+  let rendered = personalize(message, commenterName);
   const primaryLink = trackedLinks?.[0];
 
   if (!primaryLink) return rendered;

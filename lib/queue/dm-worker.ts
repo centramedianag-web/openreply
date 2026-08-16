@@ -22,6 +22,8 @@ import {
   sendDirectMessageImage,
   sendDirectMessageWithButton,
   sendDirectMessageWithLinkButton,
+  sendDirectMessageWithMenu,
+  type MenuButton,
   sendPrivateReply,
   sendPrivateReplyWithButton,
   sendPrivateReplyWithLinkButton,
@@ -37,11 +39,34 @@ import {
 import { recordWorkerAlert } from "@/lib/ops/worker-health";
 import {
   buildTrackedUrl,
+  personalize,
   renderMessageWithTracking,
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
+import {
+  buildFollowCheckPayload,
+  buildRevealPayload,
+  buildStepPayload,
+  parsePostback,
+} from "@/lib/dm/postback";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
+
+// How many auto-advancing steps one tap may deliver. Real sequences are two or
+// three messages; ten is far above anything intentional and well below a number
+// that would annoy a recipient before the loop is noticed.
+const MAX_STEP_CHAIN = 10;
+
+// Jobs processed at once, across every client on the instance. This is the one
+// shared resource a busy tenant can starve: a menu step sends its images before
+// its text, so it holds a slot for several sequential Meta calls where a flat
+// campaign held it for one.
+//
+// The work is entirely I/O — waiting on Meta — so the ceiling is Meta's rate
+// limits and the database pool, not CPU. 5 was low enough that one client's
+// burst delayed everyone else's replies, and an Instagram DM is judged on
+// arriving in seconds.
+const DM_WORKER_CONCURRENCY = Number(process.env.DM_WORKER_CONCURRENCY ?? 15);
 
 // Per-account AI replies allowed per UTC day. 300 is far above any real
 // client's inbound volume (the busiest sampled account saw ~60 DMs total) and
@@ -628,8 +653,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           openingText,
           automation.openingDmButtonLabel as string,
           automation.requireFollow
-            ? `followcheck:${automation.id}`
-            : `reveal:${automation.id}`
+            ? buildFollowCheckPayload(automation.id)
+            : buildRevealPayload(automation.id)
         );
       } else if (sendFollowPrompt) {
         const promptText = renderMessageWithoutLink({
@@ -644,7 +669,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commentId,
           promptText,
           automation.followPromptButtonLabel || "i'm following",
-          `followcheck:${automation.id}`
+          buildFollowCheckPayload(automation.id)
         );
       } else if (automation.trackedLinks.length > 0) {
         // Resolved once so the button attempt and the inline fallback below
@@ -763,6 +788,243 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
 }
 
 /**
+ * Deliver one screen of a branching menu: its images first, then its text with
+ * its buttons underneath.
+ *
+ * Reached from a `step:<stepId>` postback, which is every tap after the first
+ * in a menu-driven campaign. Unlike the reveal path this is re-entrant by
+ * design — menus loop, so the same user hitting the same step repeatedly is
+ * ordinary navigation, not a duplicate to suppress.
+ */
+async function deliverStep(params: {
+  stepId: string;
+  instagramAccountId: string;
+  userId: string;
+  delayApplied?: boolean;
+  hop?: number;
+}): Promise<void> {
+  const { stepId, instagramAccountId, userId, delayApplied, hop = 0 } = params;
+
+  // A chain is a sequence, not a loop, but nothing stops an author wiring one
+  // — and a loop here means messaging a real person until the quota runs out.
+  // The database forbids a step following itself; this forbids the longer
+  // cycles it cannot see.
+  if (hop >= MAX_STEP_CHAIN) {
+    console.log(
+      `[DM Worker] step chain from ${stepId} hit ${MAX_STEP_CHAIN} hops; stopping`
+    );
+    return;
+  }
+
+  const step = await prisma.automationStep.findUnique({
+    where: { id: stepId },
+    include: {
+      buttons: { orderBy: { sort: "asc" } },
+      automation: {
+        include: {
+          instagramAccount: true,
+          trackedLinks: {
+            select: { slug: true, destinationUrl: true },
+            orderBy: { createdAt: "asc" },
+          },
+        },
+      },
+    },
+  });
+
+  if (!step) return;
+  const { automation } = step;
+
+  if (
+    !automation.isActive ||
+    automation.instagramAccount.instagramId !== instagramAccountId ||
+    !automation.instagramAccount.accessToken
+  ) {
+    return;
+  }
+
+  // A step with a delay re-queues itself once and returns, rather than holding
+  // a worker slot asleep. The deterministic job id means a user hammering the
+  // button gets one pending delivery, not one per tap.
+  if (step.delaySeconds > 0 && !delayApplied) {
+    await getDMQueue().add(
+      POSTBACK_JOB_NAME,
+      {
+        instagramAccountId,
+        userId,
+        payload: buildStepPayload(step.id),
+        delayApplied: true,
+        stepHop: hop,
+      },
+      {
+        delay: step.delaySeconds * 1000,
+        jobId: `step_${step.id}_${userId}`,
+      }
+    );
+    return;
+  }
+
+  let accessToken: string;
+  try {
+    accessToken = decryptToken(automation.instagramAccount.accessToken);
+  } catch {
+    return;
+  }
+
+  // Instagram only gives us a display name on some events, so reuse whatever an
+  // earlier interaction captured. Missing is normal; personalize() falls back.
+  const priorLog = await prisma.dmLog.findFirst({
+    where: { automationId: automation.id, commenterId: userId },
+    select: { commenterName: true },
+  });
+  const commenterName = priorLog?.commenterName ?? null;
+
+  const dedupeId = `step:${step.id}:${userId}`;
+
+  // One reservation per step, not per message, matching the reveal path — an
+  // image and the text that explains it are one delivery to the recipient and
+  // should cost one against the plan.
+  const usage = await reserveWorkspaceDMSend(automation.workspaceId);
+  if (!usage.allowed) {
+    await prisma.dmLog.upsert({
+      where: {
+        automationId_commentId: {
+          automationId: automation.id,
+          commentId: dedupeId,
+        },
+      },
+      create: {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId: userId,
+        commenterName,
+        commentText: `(step: ${step.name ?? step.id})`,
+        commentId: dedupeId,
+        status: "SKIPPED_PLAN_LIMIT",
+        errorMessage: `Monthly DM limit reached (${usage.limit})`,
+      },
+      update: { status: "SKIPPED_PLAN_LIMIT" },
+    });
+    return;
+  }
+
+  try {
+    // Images before text: the caption should arrive under the thing it
+    // captions, and a rate card the user is already looking at reads better
+    // than one that appears after the question about it.
+    for (const imageUrl of step.imageUrls) {
+      await sendDirectMessageImage(
+        accessToken,
+        automation.instagramAccount.instagramId,
+        userId,
+        imageUrl
+      );
+    }
+
+    const buttons: MenuButton[] = step.buttons.map((b) => {
+      if (b.targetStepId) {
+        return { title: b.label, payload: buildStepPayload(b.targetStepId) };
+      }
+      // Swap a plain destination for its tracked equivalent when the campaign
+      // has one, so a tap through a menu is counted the same as a tap from a
+      // flat campaign. Same substitution renderMessageWithTracking does inline.
+      const tracked = automation.trackedLinks.find(
+        (t) =>
+          t.destinationUrl === b.url ||
+          t.destinationUrl.replace(/\/$/, "") === b.url?.replace(/\/$/, "")
+      );
+      return {
+        title: b.label,
+        url: tracked ? buildTrackedUrl(tracked.slug) : b.url!,
+      };
+    });
+
+    const text = personalize(step.text, commenterName);
+
+    if (buttons.length > 0) {
+      await sendDirectMessageWithMenu(
+        accessToken,
+        automation.instagramAccount.instagramId,
+        userId,
+        text,
+        buttons
+      );
+    } else {
+      // A leaf with no buttons is a plain message. Sending it as a button
+      // template with an empty button array is rejected by Meta.
+      await sendDirectMessage(
+        accessToken,
+        automation.instagramAccount.instagramId,
+        userId,
+        text
+      );
+    }
+
+    await prisma.dmLog.upsert({
+      where: {
+        automationId_commentId: {
+          automationId: automation.id,
+          commentId: dedupeId,
+        },
+      },
+      create: {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId: userId,
+        commenterName,
+        commentText: `(step: ${step.name ?? step.id})`,
+        commentId: dedupeId,
+        status: "SENT",
+        dmSentAt: new Date(),
+      },
+      update: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
+    });
+  } catch (error) {
+    await releaseWorkspaceDMReservation(
+      automation.workspaceId,
+      usage.periodStart
+    );
+    await prisma.dmLog.upsert({
+      where: {
+        automationId_commentId: {
+          automationId: automation.id,
+          commentId: dedupeId,
+        },
+      },
+      create: {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId: userId,
+        commenterName,
+        commentText: `(step: ${step.name ?? step.id})`,
+        commentId: dedupeId,
+        status: "FAILED",
+        errorMessage: formatError(error),
+      },
+      update: { status: "FAILED", errorMessage: formatError(error) },
+    });
+    throw error;
+  }
+
+  // Only after a successful send: a follow-up that arrives when the message it
+  // follows did not would read as a non-sequitur. Recursing rather than
+  // enqueueing keeps the hop count honest — the next step applies its own
+  // delaySeconds by re-queueing itself, so a paused chain still yields the
+  // worker.
+  if (step.nextStepId) {
+    await deliverStep({
+      stepId: step.nextStepId,
+      instagramAccountId,
+      userId,
+      hop: hop + 1,
+    });
+  }
+}
+
+/**
  * Deliver the reveal message after a user taps an opening DM's button.
  * The postback payload is `reveal:<automationId>`; the sender is the user's
  * IGSID (same id as their comment author id), which we DM directly.
@@ -770,11 +1032,26 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
 async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   const { instagramAccountId, userId, payload, fallback } = job.data;
 
-  const isFollowCheck = payload.startsWith("followcheck:");
-  if (!isFollowCheck && !payload.startsWith("reveal:")) return;
-  const automationId = payload.slice(
-    isFollowCheck ? "followcheck:".length : "reveal:".length
-  );
+  // Unrecognised payloads are not ours — Meta sends postbacks we never
+  // registered (GET_STARTED, for one). Doing nothing is the correct response.
+  const target = parsePostback(payload);
+  if (!target) return;
+
+  // Menu navigation resolves a step rather than an automation, and has no
+  // follow-gate or reveal semantics, so it leaves here entirely.
+  if (target.kind === "step") {
+    await deliverStep({
+      stepId: target.stepId,
+      instagramAccountId,
+      userId,
+      delayApplied: job.data.delayApplied,
+      hop: job.data.stepHop ?? 0,
+    });
+    return;
+  }
+
+  const isFollowCheck = target.kind === "followcheck";
+  const automationId = target.automationId;
 
   const automation = await prisma.automation.findFirst({
     where: { id: automationId, isActive: true },
@@ -849,7 +1126,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
           userId,
           promptText,
           automation.followPromptButtonLabel || "i'm following",
-          `followcheck:${automation.id}`
+          buildFollowCheckPayload(automation.id)
         );
       } catch (error) {
         console.log(
@@ -1097,6 +1374,50 @@ async function tryAiReply(
     return true;
   }
 
+  // An intent the client has prepared an answer for is answered with that
+  // answer. The model still classified the question and still wrote nothing it
+  // was not allowed to write — the difference is that "what's the entry fee?"
+  // now returns the rate card instead of a phone number.
+  //
+  // Deliberately before the text send, not after: sending both would mean
+  // "please call us" arriving directly above the card that answers the
+  // question, which reads as though we did not understand it.
+  const asset = await prisma.aiIntentAsset.findUnique({
+    where: {
+      instagramAccountId_intent: {
+        instagramAccountId: account.id,
+        intent: generated.intent,
+      },
+    },
+    select: { stepId: true },
+  });
+
+  if (asset) {
+    try {
+      await deliverStep({
+        stepId: asset.stepId,
+        instagramAccountId: account.instagramId,
+        userId: senderId,
+      });
+      await prisma.aiReply.update({
+        where: { sourceId: messageId },
+        data: { status: "SENT", sentAt: new Date() },
+      });
+      console.log(
+        `[AI] answered ${senderId} with prepared asset for ${generated.intent}`
+      );
+      return true;
+    } catch (error) {
+      // Fall through to the model's own words. A missing image or a closed
+      // messaging window should cost the customer a nicer answer, not the
+      // whole reply.
+      console.log(
+        `[AI] asset delivery failed for ${generated.intent}, falling back to text:`,
+        formatError(error)
+      );
+    }
+  }
+
   try {
     const accessToken = decryptToken(account.accessToken);
     await sendDirectMessage(
@@ -1229,10 +1550,6 @@ async function tryAiCommentReply(
 async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
 
-  if (await tryAiReply(instagramAccountId, messageId, messageText, senderId)) {
-    return;
-  }
-
   const automations = await prisma.automation.findMany({
     where: {
       dmTriggerEnabled: true,
@@ -1252,6 +1569,17 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
 
   const dedupeId = `dm:${messageId}`;
 
+  // Same rule as comments: a campaign that matched owns the message, and the
+  // AI only sees what no campaign wanted. Set on the match, not on a
+  // successful send, so a failed campaign DM doesn't get quietly papered over
+  // by an AI reply saying something different.
+  //
+  // This ordering used to be reversed for DMs — the AI ran first and returned
+  // before the loop, so on an AI-enabled account a keyword campaign could
+  // never fire at all. That made the two halves impossible to run together,
+  // which is exactly what a menu campaign with an AI fallback needs.
+  let claimedByCampaign = false;
+
   for (const automation of automations) {
     const matchResult = automation.matchAnyWord
       ? { matched: true, matchedKeyword: null }
@@ -1262,6 +1590,8 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
         );
 
     if (!matchResult.matched) continue;
+
+    claimedByCampaign = true;
 
     const existingLog = await prisma.dmLog.findUnique({
       where: {
@@ -1344,6 +1674,57 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
     });
     const commenterName = priorLog?.commenterName ?? null;
 
+    // A campaign with steps opens its menu instead of the flat dmMessage. This
+    // is the only thing that starts a branching flow: every tap after it
+    // arrives as a `step:` postback, but the first message has to come from a
+    // keyword match.
+    const entryStep = await prisma.automationStep.findFirst({
+      where: { automationId: automation.id, isEntry: true },
+      select: { id: true },
+    });
+
+    if (entryStep) {
+      // Follow-gating a menu is not supported yet, and the failure would be
+      // quiet: the prompt's button carries `followcheck:<automationId>`, which
+      // routes to the flat reveal rather than into the menu, so a gated
+      // campaign would tap through to the wrong message entirely. Skip loudly
+      // instead of delivering something the author did not configure.
+      if (automation.requireFollow) {
+        console.log(
+          `[DM Worker] campaign ${automation.id} has steps and requireFollow; ` +
+            `skipping — follow-gated menus are not supported`
+        );
+        continue;
+      }
+
+      // deliverStep reserves its own quota and writes its own DmLog row.
+      await deliverStep({
+        stepId: entryStep.id,
+        instagramAccountId,
+        userId: senderId,
+      });
+
+      // Recorded against the inbound message id as well, so a retry of this
+      // job is caught by the existingLog check above and does not re-open the
+      // menu on someone mid-conversation.
+      await prisma.dmLog.upsert({
+        where: {
+          automationId_commentId: {
+            automationId: automation.id,
+            commentId: dedupeId,
+          },
+        },
+        create: {
+          ...logBase,
+          commenterName,
+          status: "SENT",
+          dmSentAt: new Date(),
+        },
+        update: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
+      });
+      continue;
+    }
+
     // Follow gate: anyone not confirmed as a follower gets the prompt instead of
     // the link, with the same `followcheck:` button that re-verifies on tap.
     // `null` (unverifiable) prompts too — this is first contact, exactly like a
@@ -1393,7 +1774,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           senderId,
           promptText,
           automation.followPromptButtonLabel || "I'm following ✅",
-          `followcheck:${automation.id}`
+          buildFollowCheckPayload(automation.id)
         );
       } else {
         await sendRevealDirectMessage(
@@ -1471,6 +1852,14 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       throw error;
     }
   }
+
+  // Last, and only on what no campaign wanted — the mirror of the comment
+  // path. This is what a menu campaign leans on: the buttons answer the
+  // questions worth a button, and anything the tree has no branch for
+  // ("do you have veg thali?", "parking?") reaches the AI instead of silence.
+  if (!claimedByCampaign) {
+    await tryAiReply(instagramAccountId, messageId, messageText, senderId);
+  }
 }
 
 async function processJob(job: Job<DmQueueJob>): Promise<void> {
@@ -1537,7 +1926,7 @@ export function createDMWorker(): Worker<DmQueueJob> {
     processJob,
     {
       connection: getRedisConnection(),
-      concurrency: 5,
+      concurrency: DM_WORKER_CONCURRENCY,
       settings: {
         backoffStrategy: (attemptsMade: number) =>
           BACKOFF_DELAYS[Math.min(attemptsMade - 1, BACKOFF_DELAYS.length - 1)],

@@ -20,6 +20,32 @@
 const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
 const TIMEOUT_MS = 20_000;
 
+/**
+ * Every intent the model may return, in one place.
+ *
+ * These strings are also stored in AiIntentAsset.intent to decide which
+ * prepared answer a question gets. That makes renaming one a silent break:
+ * nothing fails to compile, no error is logged, the mapping simply stops
+ * matching and the assistant quietly goes back to saying "please call us".
+ *
+ * The list is pinned by a test, so a rename fails there instead of in a
+ * customer's inbox. Change one and the test tells you what else to update.
+ */
+export const SMART_REPLY_INTENTS = [
+  "greeting",
+  "collab",
+  "enquiry",
+  "followup",
+  "jobseeker",
+  "spam",
+  "pricing",
+  "other",
+] as const;
+
+export function isSmartReplyIntent(value: string): value is SmartReplyIntent {
+  return (SMART_REPLY_INTENTS as readonly string[]).includes(value);
+}
+
 export type SmartReplyIntent =
   | "greeting"
   | "collab"
@@ -27,6 +53,17 @@ export type SmartReplyIntent =
   | "followup"
   | "jobseeker"
   | "spam"
+  /**
+   * Someone asking for a figure: price, rate, entry fee, package cost. Split
+   * out from "enquiry" not to change what the model writes — it still refuses
+   * and still hands off — but so the caller can answer with the client's own
+   * rate card image instead of a phone number.
+   *
+   * That distinction is the whole point: the guardrail forbids the model from
+   * stating a price, and sending artwork the client publishes and reissues is
+   * not the model stating anything.
+   */
+  | "pricing"
   | "other";
 
 export interface SmartReply {
@@ -91,7 +128,12 @@ export function buildSystemPrompt(brain: string, mode: SmartReplyMode): string {
     ...channelRules,
     "",
     "Return ONLY JSON, shaped exactly like this:",
-    '{"intent":"greeting|collab|enquiry|followup|jobseeker|spam|other","handoff":true|false,"reply":"..."}',
+    '{"intent":"greeting|collab|enquiry|followup|jobseeker|spam|pricing|other","handoff":true|false,"reply":"..."}',
+    "",
+    'Use intent "pricing" whenever the person is asking what something costs — a',
+    "price, a rate, an entry fee, a package, a per-head charge — in any language,",
+    "however it is phrased. This does not license you to answer it: the rule below",
+    "still applies in full. It only labels the question.",
     "",
     "NEVER state a price, a rate, a plot or unit size, a payment plan, a discount,",
     "an availability, a possession or completion date, a registration or licence",

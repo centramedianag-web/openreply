@@ -48,3 +48,7 @@ next-env.d.ts
 
 /app/generated/prisma
 .gstack/
+
+# Client-specific seed scripts (not for the public repo)
+prisma/seed-*.ts
+!prisma/seed.ts
