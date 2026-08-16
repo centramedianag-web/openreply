@@ -91,7 +91,11 @@ export function isAiConfigured(): boolean {
  * only cheap way to stop a future edit quietly dropping them from one of them
  * is to assert on the assembled prompt.
  */
-export function buildSystemPrompt(brain: string, mode: SmartReplyMode): string {
+export function buildSystemPrompt(
+  brain: string,
+  mode: SmartReplyMode,
+  publishedFigures?: string | null
+): string {
   const channelRules =
     mode === "comment"
       ? [
@@ -117,6 +121,22 @@ export function buildSystemPrompt(brain: string, mode: SmartReplyMode): string {
           "one emoji, and none at all in a reply that declines something.",
         ];
 
+  // Figures the client publishes and keeps current. Listed explicitly so the
+  // blanket rule below can carve them out without also unlocking everything
+  // else — a printed entry rate is quotable; a room tariff that moves by season
+  // is not, and both would be "prices" to a boolean.
+  const figureRules = publishedFigures?.trim()
+    ? [
+        "EXCEPTION — the figures under PUBLISHED FIGURES above are published by",
+        "this business on its own printed material and kept current. You MAY",
+        "state those exactly as written, including the numbers. Quote them",
+        "verbatim; never round, convert, estimate, or add to them, and never",
+        "infer a figure that is not written there. Everything else below still",
+        "applies in full.",
+        "",
+      ]
+    : [];
+
   return [
     "You are replying on Instagram as the business described below.",
     "You are the business itself, not an assistant, and never mention being an AI.",
@@ -125,16 +145,22 @@ export function buildSystemPrompt(brain: string, mode: SmartReplyMode): string {
     brain.trim(),
     "=== END ===",
     "",
+    ...(publishedFigures?.trim()
+      ? ["=== PUBLISHED FIGURES ===", publishedFigures.trim(), "=== END ===", ""]
+      : []),
     ...channelRules,
     "",
     "Return ONLY JSON, shaped exactly like this:",
     '{"intent":"greeting|collab|enquiry|followup|jobseeker|spam|pricing|other","handoff":true|false,"reply":"..."}',
     "",
     'Use intent "pricing" whenever the person is asking what something costs — a',
-    "price, a rate, an entry fee, a package, a per-head charge — in any language,",
-    "however it is phrased. This does not license you to answer it: the rule below",
-    "still applies in full. It only labels the question.",
+    "price, a rate, an entry fee, a ticket, a package, a per-head charge — in any",
+    "language, however phrased, and even when the question also says something",
+    'else. "Village ki ticket kitne ki hai? Hum 2 log hai" is pricing.',
+    '"How much for 2 people" is pricing. "Rate kya hai" is pricing. Never label',
+    'one of these "other" — a wrong label means the person gets no answer.',
     "",
+    ...figureRules,
     "NEVER state a price, a rate, a plot or unit size, a payment plan, a discount,",
     "an availability, a possession or completion date, a registration or licence",
     "number, or anything legal or contractual. This holds even if the fact appears",
@@ -162,7 +188,8 @@ export function buildSystemPrompt(brain: string, mode: SmartReplyMode): string {
 export async function generateSmartReply(
   brain: string,
   message: string,
-  mode: SmartReplyMode = "dm"
+  mode: SmartReplyMode = "dm",
+  publishedFigures?: string | null
 ): Promise<SmartReply | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || !brain.trim() || !message.trim()) return null;
@@ -179,7 +206,9 @@ export async function generateSmartReply(
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          systemInstruction: { parts: [{ text: buildSystemPrompt(brain, mode) }] },
+          systemInstruction: {
+            parts: [{ text: buildSystemPrompt(brain, mode, publishedFigures) }],
+          },
           contents: [{ role: "user", parts: [{ text: message.slice(0, 4000) }] }],
           generationConfig: {
             temperature: 0.4,

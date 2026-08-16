@@ -1350,7 +1350,12 @@ async function tryAiReply(
 
   if (await isOverDailyAiCap(account.id, account.username)) return false;
 
-  const generated = await generateSmartReply(account.aiBrain, messageText);
+  const generated = await generateSmartReply(
+    account.aiBrain,
+    messageText,
+    "dm",
+    account.aiPublishedFigures
+  );
   if (!generated) return false;
 
   // Written before the send. A retry of this job then collides with the unique
@@ -1487,7 +1492,10 @@ async function tryAiCommentReply(
   const generated = await generateSmartReply(
     account.aiBrain,
     commentText,
-    "comment"
+    "comment",
+    // A published rate is as quotable in public as it is in a DM — it is on
+    // the client's own printed card either way.
+    account.aiPublishedFigures
   );
   if (!generated) return;
 

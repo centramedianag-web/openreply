@@ -149,6 +149,20 @@ model InstagramAccount {
   /// What the model is allowed to know about this client: who they are, what
   /// they sell, tone, and what to do with enquiries it must not answer.
   aiBrain           String?
+  /// Figures this client publishes and keeps current, which the assistant MAY
+  /// state. Everything not listed here stays forbidden.
+  ///
+  /// The blanket no-figures rule exists because a stale price sent in writing
+  /// from the client's own account is a real liability. But it is wrong for a
+  /// fixed, printed rate: a resort that hands out a card saying ₹850 gains
+  /// nothing from a bot that refuses to say ₹850 and offers a phone number
+  /// instead — which is worse than the keyword bot it replaced.
+  ///
+  /// Deliberately a list of specific facts rather than a boolean. "Allow
+  /// prices" would also unlock room tariffs that move by season and wedding
+  /// packages that are negotiated per event. Naming the quotable figures keeps
+  /// those forbidden while answering the question people actually ask.
+  aiPublishedFigures String?
   connectedAt       DateTime @default(now())
   updatedAt         DateTime @updatedAt
 

@@ -59,6 +59,58 @@ describe("buildSystemPrompt", () => {
     // public-facing prompt.
     expect(buildSystemPrompt(brain, "dm")).not.toContain("PUBLIC");
   });
+
+  /**
+   * The published-figures carve-out. A client with a printed rate card gains
+   * nothing from an assistant that refuses to read it out — but the carve-out
+   * must be exactly that, a carve-out, not a way to switch the liability rules
+   * off. These assert both halves.
+   */
+  describe("published figures", () => {
+    const FIGURES = "Village entry: Adult ₹850, Child (2.5-4ft) ₹450, under 2.5ft free.";
+
+    it("keeps the blanket rule when no figures are published", () => {
+      for (const mode of ["dm", "comment"] as const) {
+        const prompt = buildSystemPrompt(brain, mode);
+        expect(prompt).not.toContain("PUBLISHED FIGURES");
+        expect(prompt).not.toContain("EXCEPTION");
+        expect(prompt).toContain("NEVER state a price");
+      }
+    });
+
+    it("treats null and blank as no figures", () => {
+      for (const value of [null, undefined, "", "   "]) {
+        expect(buildSystemPrompt(brain, "dm", value)).not.toContain("EXCEPTION");
+      }
+    });
+
+    it("includes the figures and the carve-out when published", () => {
+      const prompt = buildSystemPrompt(brain, "dm", FIGURES);
+      expect(prompt).toContain("PUBLISHED FIGURES");
+      expect(prompt).toContain("Adult ₹850");
+      expect(prompt).toContain("EXCEPTION");
+    });
+
+    /**
+     * The rule that matters. Naming quotable figures must not disarm the
+     * restriction on everything else — a resort's entry fee is fixed and
+     * printed; its room tariffs move by season and its wedding packages are
+     * negotiated per event.
+     */
+    it("still forbids every figure that was not published", () => {
+      const prompt = buildSystemPrompt(brain, "dm", FIGURES);
+      expect(prompt).toContain("NEVER state a price");
+      expect(prompt).toContain("Never invent a figure and never");
+      expect(prompt).toContain("never round, convert, estimate");
+    });
+
+    it("applies in comment mode too", () => {
+      // A published rate is on the client's own printed card either way.
+      const prompt = buildSystemPrompt(brain, "comment", FIGURES);
+      expect(prompt).toContain("PUBLISHED FIGURES");
+      expect(prompt).toContain("NEVER ask anyone to post a phone number");
+    });
+  });
 });
 
 describe("parseSmartReply", () => {
