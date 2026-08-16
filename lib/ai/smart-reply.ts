@@ -284,18 +284,15 @@ export function parseSmartReply(raw: string): SmartReply | null {
   const reply = typeof candidate.reply === "string" ? candidate.reply.trim() : "";
   if (!reply) return null;
 
-  const intents: SmartReplyIntent[] = [
-    "greeting",
-    "collab",
-    "enquiry",
-    "followup",
-    "jobseeker",
-    "spam",
-    "other",
-  ];
-  const intent = intents.includes(candidate.intent as SmartReplyIntent)
-    ? (candidate.intent as SmartReplyIntent)
-    : "other";
+  // SMART_REPLY_INTENTS, never a second copy. This list used to be duplicated
+  // here, and when "pricing" was added to the type and the prompt but not to
+  // this array, every price question the model correctly labelled was silently
+  // rewritten to "other" on the way out — so the rate card never got attached
+  // and nothing anywhere reported a problem.
+  const intent =
+    typeof candidate.intent === "string" && isSmartReplyIntent(candidate.intent)
+      ? candidate.intent
+      : "other";
 
   return {
     intent,

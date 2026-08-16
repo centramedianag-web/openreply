@@ -8,7 +8,11 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { buildSystemPrompt, parseSmartReply } from "../lib/ai/smart-reply";
+import {
+  buildSystemPrompt,
+  parseSmartReply,
+  SMART_REPLY_INTENTS,
+} from "../lib/ai/smart-reply";
 
 describe("buildSystemPrompt", () => {
   const brain = "Mauli Infra builds homes in Nagpur. Sales: +91 90000 00000.";
@@ -110,6 +114,30 @@ describe("buildSystemPrompt", () => {
       expect(prompt).toContain("PUBLISHED FIGURES");
       expect(prompt).toContain("NEVER ask anyone to post a phone number");
     });
+  });
+});
+
+describe("parseSmartReply intent coverage", () => {
+  /**
+   * Every intent the prompt can ask for must survive parsing. This existed as a
+   * second hardcoded list once, and when "pricing" was added everywhere except
+   * there, the parser rewrote it to "other" — so the rate card silently stopped
+   * being attached and nothing errored. One list, asserted whole.
+   */
+  it("round-trips every declared intent", () => {
+    for (const intent of SMART_REPLY_INTENTS) {
+      const parsed = parseSmartReply(
+        JSON.stringify({ intent, handoff: false, reply: "ok" })
+      );
+      expect(parsed?.intent, `intent "${intent}" was not preserved`).toBe(intent);
+    }
+  });
+
+  it("still falls back to other for an unknown intent", () => {
+    const parsed = parseSmartReply(
+      JSON.stringify({ intent: "not_a_real_intent", handoff: false, reply: "ok" })
+    );
+    expect(parsed?.intent).toBe("other");
   });
 });
 
