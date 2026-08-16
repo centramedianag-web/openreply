@@ -51,4 +51,5 @@ next-env.d.ts
 
 # Client-specific seed scripts (not for the public repo)
 prisma/seed-*.ts
+prisma/cutover-*.ts
 !prisma/seed.ts
