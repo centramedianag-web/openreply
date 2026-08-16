@@ -54,14 +54,14 @@ export type SmartReplyIntent =
   | "jobseeker"
   | "spam"
   /**
-   * Someone asking for a figure: price, rate, entry fee, package cost. Split
-   * out from "enquiry" not to change what the model writes — it still refuses
-   * and still hands off — but so the caller can answer with the client's own
-   * rate card image instead of a phone number.
+   * Someone asking what something costs: a price, rate, entry fee, package, or
+   * what is included for a given amount.
    *
-   * That distinction is the whole point: the guardrail forbids the model from
-   * stating a price, and sending artwork the client publishes and reissues is
-   * not the model stating anything.
+   * Split out from "enquiry" so the caller can attach the client's own rate
+   * card. Whether the model also states the figure depends on
+   * aiPublishedFigures — but the label must not: it describes the question, not
+   * the answer. Tying it to the reply is exactly the bug that made every price
+   * question come back as "other", which silently dropped the card.
    */
   | "pricing"
   | "other";
@@ -153,12 +153,20 @@ export function buildSystemPrompt(
     "Return ONLY JSON, shaped exactly like this:",
     '{"intent":"greeting|collab|enquiry|followup|jobseeker|spam|pricing|other","handoff":true|false,"reply":"..."}',
     "",
-    'Use intent "pricing" whenever the person is asking what something costs — a',
-    "price, a rate, an entry fee, a ticket, a package, a per-head charge — in any",
-    "language, however phrased, and even when the question also says something",
-    'else. "Village ki ticket kitne ki hai? Hum 2 log hai" is pricing.',
-    '"How much for 2 people" is pricing. "Rate kya hai" is pricing. Never label',
-    'one of these "other" — a wrong label means the person gets no answer.',
+    "The intent describes WHAT WAS ASKED, never what you decided to reply. Label",
+    "it the same way whether you answer the question, refuse it, or hand it to a",
+    "person — the label is used to attach the right material to your reply, so a",
+    "wrong one silently drops an image the person should have received.",
+    "",
+    'Use "pricing" for any question about what something costs: a price, a rate,',
+    "an entry fee, a ticket, a package, a per-head charge, what is included for a",
+    "given amount — in any language, however phrased, and even when the message",
+    "also says something else. All of these are pricing:",
+    '  "Village ki ticket kitne ki hai? Hum 2 log hai"',
+    '  "Rate do village ke"  /  "So 2 adults ka kitna ayega"',
+    '  "Koi rate card hai?"  /  "How much for 2 people"  /  "All includes in 850?"',
+    'Do not label these "enquiry" or "other". If cost is any part of what they',
+    'asked, it is "pricing".',
     "",
     ...figureRules,
     "NEVER state a price, a rate, a plot or unit size, a payment plan, a discount,",
